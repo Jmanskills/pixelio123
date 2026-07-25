@@ -1,0 +1,1759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BrainStorm Royale</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+  <script>window.SOCKET_SERVER_URL = window.SOCKET_SERVER_URL || 'http://localhost:3001';</script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Nunito', sans-serif; overflow: hidden; }
+    #root { width: 100%; min-height: 100vh; }
+    @keyframes floatAround {
+      0%, 100% { transform: translate(0, 0) rotate(0deg); }
+      25% { transform: translate(30px, -30px) rotate(90deg); }
+      50% { transform: translate(-20px, 20px) rotate(180deg); }
+      75% { transform: translate(-30px, -20px) rotate(270deg); }
+    }
+    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-12px); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes slideDown {
+      from { opacity: 0; transform: translateX(-50%) translateY(-30px); }
+      to { opacity: 1; transform: translateX(-50%) translateY(0); }
+    }
+    @keyframes devGlow {
+      0%, 100% { box-shadow: 0 0 20px #00ff88, 0 0 40px #00ff8844; }
+      50% { box-shadow: 0 0 40px #00ff88, 0 0 80px #00ff8866; }
+    }
+    @keyframes adminPulse {
+      0%, 100% { opacity: 1; } 50% { opacity: 0.5; }
+    }
+    @keyframes testBanner {
+      0%, 100% { background: rgba(239,68,68,0.9); } 50% { background: rgba(220,38,38,0.9); }
+    }
+    button:hover { filter: brightness(1.1); }
+    button:active { transform: scale(0.97) !important; }
+    input:focus { border-color: #8b5cf6 !important; box-shadow: 0 0 20px rgba(139, 92, 246, 0.3); outline: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useEffect, useCallback, useRef } = React;
+
+    // ============== CONSTANTS ==============
+    const MAP_SIZE = 2000;
+    const PLAYER_SIZE = 30;
+    const PLAYER_SPEED = 4;
+    const BULLET_SPEED = 12;
+    const BOT_COUNT = 15;
+    const TRIVIA_STATION_COUNT = 5;
+    const LOOT_COUNT = 20;
+    const OWNER_USERNAME = 'jmanskills';
+
+    const WEAPONS = {
+      pistol:   { name: 'Pistol',     damage: 15, fireRate: 400,  ammoUse: 1, range: 300, icon: '🔫', color: '#a78bfa' },
+      shotgun:  { name: 'Shotgun',    damage: 40, fireRate: 800,  ammoUse: 2, range: 150, icon: '💥', color: '#f472b6' },
+      rifle:    { name: 'Rifle',      damage: 25, fireRate: 200,  ammoUse: 1, range: 400, icon: '🎯', color: '#60a5fa' },
+      sniper:   { name: 'Sniper',     damage: 75, fireRate: 1500, ammoUse: 1, range: 600, icon: '🔭', color: '#34d399' },
+      smg:      { name: 'SMG',        damage: 10, fireRate: 100,  ammoUse: 1, range: 200, icon: '🌀', color: '#f59e0b' },
+      rocket:   { name: 'Rocket',     damage: 90, fireRate: 2000, ammoUse: 3, range: 500, icon: '🚀', color: '#ef4444' },
+      laser:    { name: 'Laser',      damage: 20, fireRate: 150,  ammoUse: 1, range: 450, icon: '🔆', color: '#06b6d4' },
+      grenade:  { name: 'Grenade',    damage: 60, fireRate: 1200, ammoUse: 2, range: 350, icon: '💣', color: '#84cc16' },
+      crossbow: { name: 'Crossbow',   damage: 55, fireRate: 900,  ammoUse: 1, range: 380, icon: '🏹', color: '#8b5cf6' },
+      minigun:  { name: 'Minigun',    damage: 8,  fireRate: 60,   ammoUse: 1, range: 280, icon: '⚙️', color: '#fb923c' },
+    };
+
+    const TRIVIA_QUESTIONS = [
+      { q: "What planet is known as the Red Planet?", a: ["Mars","Venus","Jupiter","Mercury"], correct: 0 },
+      { q: "How many sides does a hexagon have?", a: ["5","6","7","8"], correct: 1 },
+      { q: "What is the largest ocean?", a: ["Atlantic","Pacific","Indian","Arctic"], correct: 1 },
+      { q: "Who wrote Romeo and Juliet?", a: ["Dickens","Shakespeare","Twain","Austen"], correct: 1 },
+      { q: "What is 15 × 8?", a: ["110","115","120","125"], correct: 2 },
+      { q: "What gas do plants breathe in?", a: ["Oxygen","Nitrogen","CO2","Hydrogen"], correct: 2 },
+      { q: "How many continents are there?", a: ["5","6","7","8"], correct: 2 },
+      { q: "What is the capital of Japan?", a: ["Seoul","Beijing","Tokyo","Bangkok"], correct: 2 },
+      { q: "Which animal is the fastest?", a: ["Lion","Cheetah","Horse","Falcon"], correct: 1 },
+      { q: "What year did WW2 end?", a: ["1943","1944","1945","1946"], correct: 2 },
+      { q: "What is the chemical symbol for water?", a: ["H2O","CO2","NaCl","O2"], correct: 0 },
+      { q: "How many players on a soccer team?", a: ["9","10","11","12"], correct: 2 },
+      { q: "What is the largest planet?", a: ["Saturn","Jupiter","Neptune","Uranus"], correct: 1 },
+      { q: "Who painted the Mona Lisa?", a: ["Picasso","Da Vinci","Van Gogh","Monet"], correct: 1 },
+      { q: "What is 144 ÷ 12?", a: ["10","11","12","14"], correct: 2 },
+    ];
+
+    const POWERUPS = [
+      { name: 'Shield Boost', effect: 'shield',    value: 50,  icon: '🛡️', color: '#60a5fa' },
+      { name: 'Speed Boost',  effect: 'speed',     value: 1.5, duration: 10000, icon: '⚡', color: '#fbbf24' },
+      { name: 'Health Pack',  effect: 'health',    value: 50,  icon: '💖', color: '#f472b6' },
+      { name: 'Ammo Crate',   effect: 'ammo',      value: 30,  icon: '📦', color: '#a78bfa' },
+      { name: 'Material Bonus', effect: 'materials', value: 50, icon: '🧱', color: '#fb923c' },
+    ];
+
+    const SKINS = [
+      { id: 'default',  name: 'Rookie',    color: '#8b5cf6', price: 0,    owned: true,  emoji: '😎' },
+      { id: 'bubblegum',name: 'Bubblegum', color: '#ec4899', price: 500,  owned: false, emoji: '🍬' },
+      { id: 'mint',     name: 'Mint',      color: '#10b981', price: 500,  owned: false, emoji: '🌿' },
+      { id: 'ocean',    name: 'Ocean',     color: '#0ea5e9', price: 750,  owned: false, emoji: '🌊' },
+      { id: 'sunset',   name: 'Sunset',    color: '#f97316', price: 1000, owned: false, emoji: '🌅' },
+      { id: 'golden',   name: 'Golden',    color: '#eab308', price: 2000, owned: false, emoji: '⭐' },
+      { id: 'galaxy',   name: 'Galaxy',    color: '#6366f1', price: 1500, owned: false, emoji: '🌌' },
+      { id: 'cherry',   name: 'Cherry',    color: '#ef4444', price: 1000, owned: false, emoji: '🍒' },
+      { id: 'pug_taco', name: 'Pug Taco',  color: '#d97706', price: 800,  owned: false, emoji: '🌮', special: true },
+    ];
+
+    const EMOTES = [
+      { id: 'wave',  name: 'Wave',     emoji: '👋', price: 0,   owned: true  },
+      { id: 'dance', name: 'Dance',    emoji: '💃', price: 300, owned: false },
+      { id: 'laugh', name: 'Laugh',    emoji: '😂', price: 200, owned: false },
+      { id: 'flex',  name: 'Flex',     emoji: '💪', price: 400, owned: false },
+      { id: 'gg',    name: 'GG',       emoji: '🎮', price: 300, owned: false },
+      { id: 'brain', name: 'Big Brain',emoji: '🧠', price: 500, owned: false },
+    ];
+
+    // ============== SAVE SYSTEM ==============
+    const SAVE_KEY = 'bsr_save_v1';
+    const AUTH_KEY = 'bsr_auth_v1';
+    const ADMINS_KEY = 'bsr_admins_v1';
+
+    function saveGame(data) {
+      try { localStorage.setItem(SAVE_KEY, JSON.stringify({ ...data, lastSaved: new Date().toISOString() })); } catch(e) {}
+    }
+
+    function loadGame() {
+      try {
+        const raw = localStorage.getItem(SAVE_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch(e) { return null; }
+    }
+
+    function saveAuth(auth) {
+      try { localStorage.setItem(AUTH_KEY, JSON.stringify(auth)); } catch(e) {}
+    }
+
+    function loadAuth() {
+      try {
+        const raw = localStorage.getItem(AUTH_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch(e) { return null; }
+    }
+
+    const PERMANENT_ADMINS = [OWNER_USERNAME, 'zen'];
+
+    function getAdmins() {
+      try {
+        const raw = localStorage.getItem(ADMINS_KEY);
+        const stored = raw ? JSON.parse(raw) : [];
+        // merge permanent admins so they're always in the list
+        const merged = [...new Set([...PERMANENT_ADMINS, ...stored])];
+        return merged;
+      } catch(e) { return PERMANENT_ADMINS; }
+    }
+
+    function saveAdmins(list) {
+      try { localStorage.setItem(ADMINS_KEY, JSON.stringify(list)); } catch(e) {}
+    }
+
+    function getAccounts() {
+      try {
+        const raw = localStorage.getItem('bsr_accounts_v1');
+        return raw ? JSON.parse(raw) : {};
+      } catch(e) { return {}; }
+    }
+
+    function saveAccounts(accs) {
+      try { localStorage.setItem('bsr_accounts_v1', JSON.stringify(accs)); } catch(e) {}
+    }
+
+    function isOwner(username) { return username === OWNER_USERNAME; }
+    function isPermanentAdmin(username) { return PERMANENT_ADMINS.includes(username); }
+    function isAdmin(username) { return getAdmins().includes(username) || isOwner(username); }
+
+    function makeDefaultPlayer(username) {
+      return {
+        username,
+        level: 1, xp: 0, coins: 1000,
+        selectedSkin: 'default', selectedEmote: 'wave',
+        skins: ['default'], emotes: ['wave'],
+        stats: { wins: 0, kills: 0, gamesPlayed: 0 }
+      };
+    }
+
+    // ============== FLOATING SHAPES ==============
+    function FloatingShapes({ count = 15, colors = ['#8b5cf6','#ec4899','#06b6d4','#10b981','#f59e0b'] }) {
+      const shapes = useRef([...Array(count)].map((_, i) => ({
+        id: i, x: Math.random()*100, y: Math.random()*100,
+        size: 20 + Math.random()*60,
+        color: colors[Math.floor(Math.random()*colors.length)],
+        duration: 15 + Math.random()*20, delay: Math.random()*-20,
+        type: ['circle','square','triangle'][Math.floor(Math.random()*3)]
+      })));
+      return (
+        <div style={styles.floatingContainer}>
+          {shapes.current.map(shape => (
+            <div key={shape.id} style={{
+              position:'absolute', left:`${shape.x}%`, top:`${shape.y}%`,
+              width: shape.size, height: shape.size,
+              background: shape.type !== 'triangle' ? shape.color : 'transparent',
+              borderRadius: shape.type==='circle' ? '50%' : shape.type==='square' ? '12px' : '0',
+              borderLeft: shape.type==='triangle' ? `${shape.size/2}px solid transparent` : 'none',
+              borderRight: shape.type==='triangle' ? `${shape.size/2}px solid transparent` : 'none',
+              borderBottom: shape.type==='triangle' ? `${shape.size}px solid ${shape.color}` : 'none',
+              opacity: 0.15,
+              animation: `floatAround ${shape.duration}s ease-in-out infinite`,
+              animationDelay: `${shape.delay}s`, pointerEvents:'none',
+            }} />
+          ))}
+        </div>
+      );
+    }
+
+    // ============== AUTH SCREEN ==============
+    function AuthScreen({ onLogin }) {
+      const [mode, setMode] = useState('login'); // 'login' | 'signup' | 'guest'
+      const [username, setUsername] = useState('');
+      const [password, setPassword] = useState('');
+      const [confirm, setConfirm] = useState('');
+      const [error, setError] = useState('');
+      const [success, setSuccess] = useState('');
+
+      const handleLogin = () => {
+        setError('');
+        if (!username.trim() || !password) return setError('Please fill in all fields.');
+        const accounts = getAccounts();
+        const acc = accounts[username.toLowerCase()];
+        if (!acc) return setError('Account not found. Sign up first!');
+        if (acc.password !== password) return setError('Wrong password.');
+        saveAuth({ username: acc.username });
+        const saved = loadGame();
+        const playerData = (saved && saved.username === acc.username) ? saved : makeDefaultPlayer(acc.username);
+        onLogin(playerData);
+      };
+
+      const handleSignup = () => {
+        setError('');
+        if (!username.trim() || !password || !confirm) return setError('Please fill in all fields.');
+        if (username.trim().length < 3) return setError('Username must be at least 3 characters.');
+        if (password.length < 6) return setError('Password must be at least 6 characters.');
+        if (password !== confirm) return setError('Passwords do not match.');
+        const accounts = getAccounts();
+        if (accounts[username.toLowerCase()]) return setError('Username already taken!');
+        accounts[username.toLowerCase()] = { username: username.trim(), password };
+        saveAccounts(accounts);
+        setSuccess('Account created! Logging in...');
+        setTimeout(() => {
+          saveAuth({ username: username.trim() });
+          const playerData = makeDefaultPlayer(username.trim());
+          saveGame(playerData);
+          onLogin(playerData);
+        }, 800);
+      };
+
+      const handleGuest = () => {
+        const guestName = 'Guest' + Math.floor(Math.random() * 9999);
+        onLogin(makeDefaultPlayer(guestName));
+      };
+
+      return (
+        <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4c1d95 100%)', position:'relative', padding:'20px' }}>
+          <FloatingShapes />
+          <div style={{ position:'relative', zIndex:1, background:'rgba(255,255,255,0.08)', backdropFilter:'blur(20px)', borderRadius:'30px', padding:'40px', maxWidth:'420px', width:'100%', border:'2px solid rgba(255,255,255,0.15)' }}>
+            <div style={{ textAlign:'center', marginBottom:'30px' }}>
+              <div style={{ fontSize:'3rem', marginBottom:'8px', animation:'bounce 2s infinite' }}>🧠⚡</div>
+              <h1 style={{ fontSize:'2rem', fontWeight:900, color:'#fff', margin:0 }}>
+                <span style={{ color:'#c4b5fd' }}>Brain</span><span style={{ color:'#fbbf24' }}>Storm</span>
+              </h1>
+              <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginTop:'4px' }}>Answer. Build. Survive. Win!</div>
+            </div>
+
+            <div style={{ display:'flex', gap:'8px', marginBottom:'25px' }}>
+              {['login','signup'].map(m => (
+                <button key={m} onClick={() => { setMode(m); setError(''); setSuccess(''); }} style={{
+                  flex:1, padding:'12px', fontSize:'1rem', fontWeight:700, fontFamily:'inherit',
+                  background: mode===m ? 'linear-gradient(135deg,#8b5cf6,#7c3aed)' : 'rgba(255,255,255,0.08)',
+                  border:'none', borderRadius:'15px', color:'#fff', cursor:'pointer',
+                  boxShadow: mode===m ? '0 5px 20px rgba(139,92,246,0.4)' : 'none'
+                }}>
+                  {m === 'login' ? '🔑 Login' : '✨ Sign Up'}
+                </button>
+              ))}
+            </div>
+
+            <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+              <input
+                type="text" placeholder="Username" value={username}
+                onChange={e => setUsername(e.target.value)}
+                style={{ padding:'14px 18px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none' }}
+              />
+              <input
+                type="password" placeholder="Password" value={password}
+                onChange={e => setPassword(e.target.value)}
+                onKeyDown={e => e.key==='Enter' && (mode==='login' ? handleLogin() : null)}
+                style={{ padding:'14px 18px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none' }}
+              />
+              {mode === 'signup' && (
+                <input
+                  type="password" placeholder="Confirm Password" value={confirm}
+                  onChange={e => setConfirm(e.target.value)}
+                  style={{ padding:'14px 18px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none' }}
+                />
+              )}
+            </div>
+
+            {error && <div style={{ color:'#f87171', fontSize:'0.9rem', marginTop:'10px', textAlign:'center' }}>{error}</div>}
+            {success && <div style={{ color:'#34d399', fontSize:'0.9rem', marginTop:'10px', textAlign:'center' }}>{success}</div>}
+
+            <button onClick={mode==='login' ? handleLogin : handleSignup} style={{
+              width:'100%', marginTop:'20px', padding:'16px', fontSize:'1.1rem', fontWeight:800,
+              fontFamily:'inherit', background:'linear-gradient(135deg,#8b5cf6,#7c3aed)', border:'none',
+              borderRadius:'20px', color:'#fff', cursor:'pointer', boxShadow:'0 8px 25px rgba(139,92,246,0.4)'
+            }}>
+              {mode==='login' ? '🚀 Login' : '🎉 Create Account'}
+            </button>
+
+            <div style={{ textAlign:'center', marginTop:'15px' }}>
+              <button onClick={handleGuest} style={{
+                background:'none', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px',
+                color:'rgba(255,255,255,0.6)', padding:'10px 25px', fontSize:'0.9rem', cursor:'pointer',
+                fontFamily:'inherit'
+              }}>
+                👤 Play as Guest (no save)
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============== ADMIN PANEL ==============
+    function AdminPanel({ playerData, setPlayerData, onClose, testMode, setTestMode, aimbotMode, setAimbotMode }) {
+      const [tab, setTab] = useState('tools');
+      const [newAdmin, setNewAdmin] = useState('');
+      const [adminMsg, setAdminMsg] = useState('');
+      const [giveTarget, setGiveTarget] = useState('');
+      const [giveCoins, setGiveCoins] = useState(500);
+      const [spawnMsg, setSpawnMsg] = useState('');
+
+      const admins = getAdmins();
+      const owner = isOwner(playerData.username);
+
+      const promoteAdmin = () => {
+        if (!newAdmin.trim()) return;
+        if (admins.includes(newAdmin.trim())) return setAdminMsg(`${newAdmin} is already an admin.`);
+        const updated = [...admins, newAdmin.trim()];
+        saveAdmins(updated);
+        setAdminMsg(`✅ ${newAdmin} is now an admin!`);
+        setNewAdmin('');
+      };
+
+      const revokeAdmin = (name) => {
+        if (isPermanentAdmin(name)) return setAdminMsg(`Can't revoke a permanent admin!`);
+        const stored = (() => { try { const r=localStorage.getItem(ADMINS_KEY); return r?JSON.parse(r):[]; } catch(e){return[];} })();
+        saveAdmins(stored.filter(a => a !== name));
+        setAdminMsg(`❌ ${name} removed from admins.`);
+      };
+
+      const giveCoinsToSelf = (amount) => {
+        setPlayerData(prev => { const n = { ...prev, coins: prev.coins + amount }; saveGame(n); return n; });
+        setSpawnMsg(`+${amount} coins added!`);
+      };
+
+      const giveSkinToSelf = (skinId) => {
+        if (playerData.skins.includes(skinId)) return setSpawnMsg('You already own that skin.');
+        setPlayerData(prev => { const n = { ...prev, skins: [...prev.skins, skinId] }; saveGame(n); return n; });
+        setSpawnMsg(`🎨 ${SKINS.find(s=>s.id===skinId)?.name} skin unlocked!`);
+      };
+
+      const tabStyle = (t) => ({
+        padding:'10px 18px', fontSize:'0.9rem', fontWeight:700, fontFamily:'inherit',
+        background: tab===t ? 'linear-gradient(135deg,#7c3aed,#6d28d9)' : 'rgba(255,255,255,0.08)',
+        border:'none', borderRadius:'12px', color:'#fff', cursor:'pointer'
+      });
+
+      return (
+        <div style={{ position:'fixed', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.85)', zIndex:9999, display:'flex', alignItems:'center', justifyContent:'center' }}>
+          <div style={{ background:'linear-gradient(135deg,#1e1b4b,#312e81)', border:'3px solid #7c3aed', borderRadius:'25px', padding:'30px', maxWidth:'600px', width:'95%', maxHeight:'85vh', overflowY:'auto' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'20px' }}>
+              <h2 style={{ color:'#fff', fontSize:'1.5rem', margin:0 }}>
+                👑 Admin Panel <span style={{ color:'#fbbf24', fontSize:'0.9rem' }}>({playerData.username})</span>
+              </h2>
+              <button onClick={onClose} style={{ background:'rgba(239,68,68,0.3)', border:'2px solid #ef4444', borderRadius:'12px', color:'#fff', padding:'8px 16px', cursor:'pointer', fontFamily:'inherit', fontWeight:700 }}>✕ Close</button>
+            </div>
+
+            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'20px' }}>
+              {['tools','skins','admins','info'].map(t => (
+                <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
+                  {t==='tools'?'🛠️ Tools':t==='skins'?'🎨 Give Skins':t==='admins'?'👥 Admins':'ℹ️ Info'}
+                </button>
+              ))}
+            </div>
+
+            {tab === 'tools' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'15px' }}>
+                {/* Test Mode */}
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'15px', padding:'18px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div>
+                      <div style={{ color:'#fff', fontWeight:700, fontSize:'1rem' }}>🧪 Test Mode</div>
+                      <div style={{ color:'#a5b4fc', fontSize:'0.8rem', marginTop:'3px' }}>Disables saving. Red banner shown.</div>
+                    </div>
+                    <button onClick={() => setTestMode(!testMode)} style={{
+                      padding:'10px 24px', fontWeight:800, fontFamily:'inherit', fontSize:'1rem',
+                      background: testMode ? 'linear-gradient(135deg,#ef4444,#dc2626)' : 'linear-gradient(135deg,#10b981,#059669)',
+                      border:'none', borderRadius:'12px', color:'#fff', cursor:'pointer'
+                    }}>{testMode ? 'ON 🔴' : 'OFF ⚫'}</button>
+                  </div>
+                </div>
+                {/* Aimbot */}
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'15px', padding:'18px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                    <div>
+                      <div style={{ color:'#fff', fontWeight:700, fontSize:'1rem' }}>🎯 Aimbot</div>
+                      <div style={{ color:'#a5b4fc', fontSize:'0.8rem', marginTop:'3px' }}>Auto-answers trivia correctly in-game.</div>
+                    </div>
+                    <button onClick={() => setAimbotMode(!aimbotMode)} style={{
+                      padding:'10px 24px', fontWeight:800, fontFamily:'inherit', fontSize:'1rem',
+                      background: aimbotMode ? 'linear-gradient(135deg,#f59e0b,#d97706)' : 'linear-gradient(135deg,#6b7280,#4b5563)',
+                      border:'none', borderRadius:'12px', color:'#fff', cursor:'pointer'
+                    }}>{aimbotMode ? 'ON 🟡' : 'OFF ⚫'}</button>
+                  </div>
+                </div>
+                {/* Give Coins */}
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'15px', padding:'18px' }}>
+                  <div style={{ color:'#fff', fontWeight:700, fontSize:'1rem', marginBottom:'10px' }}>🪙 Give Coins to Yourself</div>
+                  <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+                    {[100, 500, 1000, 5000].map(amt => (
+                      <button key={amt} onClick={() => giveCoinsToSelf(amt)} style={{
+                        padding:'10px 18px', fontWeight:700, fontFamily:'inherit', fontSize:'0.9rem',
+                        background:'linear-gradient(135deg,#fbbf24,#f59e0b)', border:'none',
+                        borderRadius:'12px', color:'#1e1b4b', cursor:'pointer'
+                      }}>+{amt} 🪙</button>
+                    ))}
+                  </div>
+                  {spawnMsg && <div style={{ color:'#34d399', fontSize:'0.85rem', marginTop:'8px' }}>{spawnMsg}</div>}
+                </div>
+                {/* Dev Room teleport hint */}
+                <div style={{ background:'rgba(0,255,136,0.08)', borderRadius:'15px', padding:'18px', border:'1px solid #00ff8844' }}>
+                  <div style={{ color:'#00ff88', fontWeight:700, fontSize:'1rem' }}>🚪 Secret Dev Room</div>
+                  <div style={{ color:'#a5b4fc', fontSize:'0.8rem', marginTop:'4px' }}>In-game: walk to the center top of the map. Look for the glowing green zone.</div>
+                  <div style={{ color:'#a5b4fc', fontSize:'0.8rem' }}>Konami: ↑ ↑ ↓ ↓ ← → ← → B A on menu screen.</div>
+                </div>
+              </div>
+            )}
+
+            {tab === 'skins' && (
+              <div>
+                <div style={{ color:'#a5b4fc', fontSize:'0.85rem', marginBottom:'15px' }}>Click any skin to unlock it for yourself instantly.</div>
+                <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(130px,1fr))', gap:'12px' }}>
+                  {SKINS.map(skin => {
+                    const owned = playerData.skins.includes(skin.id);
+                    return (
+                      <div key={skin.id} onClick={() => giveSkinToSelf(skin.id)} style={{
+                        background: owned ? 'rgba(16,185,129,0.15)' : 'rgba(255,255,255,0.06)',
+                        border: owned ? '2px solid #10b981' : '2px solid rgba(255,255,255,0.1)',
+                        borderRadius:'15px', padding:'15px', textAlign:'center', cursor: owned ? 'default' : 'pointer',
+                        transition:'all 0.2s'
+                      }}>
+                        <div style={{ fontSize:'1.8rem', marginBottom:'6px' }}>{skin.emoji || '😊'}</div>
+                        <div style={{ color:'#fff', fontWeight:700, fontSize:'0.85rem' }}>{skin.name}</div>
+                        <div style={{ color: owned ? '#10b981' : '#a5b4fc', fontSize:'0.75rem', marginTop:'3px' }}>
+                          {owned ? '✓ Owned' : `🪙 ${skin.price}`}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button onClick={() => {
+                  setPlayerData(prev => { const n = { ...prev, skins: SKINS.map(s=>s.id), coins: prev.coins }; saveGame(n); return n; });
+                  setSpawnMsg('All skins unlocked!');
+                }} style={{ width:'100%', marginTop:'15px', padding:'14px', fontWeight:800, fontFamily:'inherit', fontSize:'1rem', background:'linear-gradient(135deg,#ec4899,#db2777)', border:'none', borderRadius:'15px', color:'#fff', cursor:'pointer' }}>
+                  🎁 Unlock ALL Skins
+                </button>
+                {spawnMsg && <div style={{ color:'#34d399', textAlign:'center', marginTop:'8px', fontSize:'0.9rem' }}>{spawnMsg}</div>}
+              </div>
+            )}
+
+            {tab === 'admins' && owner && (
+              <div>
+                <div style={{ color:'#fbbf24', fontSize:'0.85rem', marginBottom:'15px' }}>Owner-only: promote/revoke admins.</div>
+                <div style={{ display:'flex', gap:'8px', marginBottom:'15px' }}>
+                  <input value={newAdmin} onChange={e=>setNewAdmin(e.target.value)} placeholder="Username to promote..."
+                    style={{ flex:1, padding:'12px 16px', fontSize:'0.95rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'12px', color:'#fff', outline:'none' }}
+                  />
+                  <button onClick={promoteAdmin} style={{ padding:'12px 20px', fontWeight:700, fontFamily:'inherit', background:'linear-gradient(135deg,#10b981,#059669)', border:'none', borderRadius:'12px', color:'#fff', cursor:'pointer' }}>Add</button>
+                </div>
+                {adminMsg && <div style={{ color:'#a5b4fc', fontSize:'0.85rem', marginBottom:'10px' }}>{adminMsg}</div>}
+                <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                  {admins.map(a => (
+                    <div key={a} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'rgba(255,255,255,0.06)', borderRadius:'12px', padding:'12px 16px' }}>
+                      <span style={{ color:'#fff', fontWeight:700 }}>
+                        {isOwner(a) ? '👑 ' : isPermanentAdmin(a) ? '⭐ ' : '🛡️ '}{a}
+                        {isPermanentAdmin(a) && !isOwner(a) && <span style={{ fontSize:'0.7rem', color:'#a5b4fc', marginLeft:'6px' }}>(permanent)</span>}
+                      </span>
+                      {!isPermanentAdmin(a) && (
+                        <button onClick={() => revokeAdmin(a)} style={{ background:'rgba(239,68,68,0.2)', border:'2px solid #ef4444', borderRadius:'10px', color:'#f87171', padding:'6px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem', fontWeight:700 }}>Revoke</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {tab === 'admins' && !owner && (
+              <div style={{ color:'#a5b4fc', textAlign:'center', padding:'20px' }}>Only the owner (jmanskills) can manage admins.</div>
+            )}
+
+            {tab === 'info' && (
+              <div style={{ color:'#a5b4fc', display:'flex', flexDirection:'column', gap:'10px', fontSize:'0.9rem' }}>
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'12px', padding:'14px' }}>
+                  <span style={{ color:'#fff', fontWeight:700 }}>Your username: </span>{playerData.username}
+                </div>
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'12px', padding:'14px' }}>
+                  <span style={{ color:'#fff', fontWeight:700 }}>Role: </span>{isOwner(playerData.username) ? '👑 Owner' : '🛡️ Admin'}
+                </div>
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'12px', padding:'14px' }}>
+                  <span style={{ color:'#fff', fontWeight:700 }}>Coins: </span>{playerData.coins.toLocaleString()} 🪙
+                </div>
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'12px', padding:'14px' }}>
+                  <span style={{ color:'#fff', fontWeight:700 }}>Skins owned: </span>{playerData.skins.length} / {SKINS.length}
+                </div>
+                <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'12px', padding:'14px' }}>
+                  <span style={{ color:'#fff', fontWeight:700 }}>Open shortcut: </span>Ctrl + Shift + A
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ============== SECRET DEV ROOM ==============
+    function DevRoom({ onBack }) {
+      const [chestClaimed, setChestClaimed] = useState(() => {
+        try { return localStorage.getItem('bsr_dev_chest') === new Date().toDateString(); } catch(e) { return false; }
+      });
+      const [chestMsg, setChestMsg] = useState('');
+
+      const claimChest = (setPlayerData) => {
+        if (chestClaimed) return;
+        setChestClaimed(true);
+        try { localStorage.setItem('bsr_dev_chest', new Date().toDateString()); } catch(e) {}
+        setChestMsg('🪙 +100 coins! Come back tomorrow for more.');
+      };
+
+      return (
+        <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#041a0a,#0a2e14)', position:'relative', padding:'30px', overflow:'hidden' }}>
+          <div style={{ position:'absolute', top:0, left:0, right:0, bottom:0, background:'radial-gradient(ellipse at center, rgba(0,255,136,0.08) 0%, transparent 70%)', pointerEvents:'none' }} />
+          <button onClick={onBack} style={{ ...styles.backBtn, position:'relative', zIndex:10 }}>← Back</button>
+
+          <div style={{ maxWidth:'700px', margin:'20px auto', position:'relative', zIndex:1 }}>
+            <h1 style={{ textAlign:'center', color:'#00ff88', fontSize:'2.5rem', fontWeight:900, textShadow:'0 0 30px #00ff88', marginBottom:'8px', animation:'devGlow 2s infinite' }}>
+              🚪 The Backrooms
+            </h1>
+            <p style={{ textAlign:'center', color:'rgba(0,255,136,0.6)', marginBottom:'40px' }}>You found the secret dev room. Nice.</p>
+
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'20px' }}>
+              {/* Easter Egg Wall */}
+              <div style={{ gridColumn:'1/-1', background:'rgba(0,255,136,0.06)', border:'2px solid rgba(0,255,136,0.3)', borderRadius:'20px', padding:'25px' }}>
+                <h3 style={{ color:'#00ff88', marginBottom:'15px', fontSize:'1.2rem' }}>🎨 Easter Egg Wall</h3>
+                <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                  {[
+                    '🧑‍💻 Made with love (and caffeine) by jmanskills',
+                    '🌮 Pug Taco was the best decision we ever made',
+                    "🏆 If you found this... you win nothing. Go play the game.",
+                    '🧠 The brain is just a CPU that gets tired',
+                    '⚡ BrainStorm Royale v2.0 — Now with secret rooms',
+                  ].map((msg, i) => (
+                    <div key={i} style={{ color:'rgba(0,255,136,0.8)', fontSize:'0.9rem', padding:'8px 12px', background:'rgba(0,255,136,0.05)', borderRadius:'10px', borderLeft:'3px solid #00ff8844' }}>
+                      {msg}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Daily Chest */}
+              <div style={{ background:'rgba(251,191,36,0.08)', border:'2px solid rgba(251,191,36,0.3)', borderRadius:'20px', padding:'25px', textAlign:'center' }}>
+                <div style={{ fontSize:'3rem', marginBottom:'10px' }}>📦</div>
+                <h3 style={{ color:'#fbbf24', marginBottom:'8px' }}>Daily Chest</h3>
+                <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'0.8rem', marginBottom:'15px' }}>+100 coins once per day</p>
+                <button onClick={() => {
+                  if (!chestClaimed) {
+                    setChestClaimed(true);
+                    try { localStorage.setItem('bsr_dev_chest', new Date().toDateString()); } catch(e) {}
+                    setChestMsg('🪙 +100 coins added!');
+                  }
+                }} disabled={chestClaimed} style={{
+                  padding:'12px 24px', fontWeight:800, fontFamily:'inherit', fontSize:'1rem',
+                  background: chestClaimed ? 'rgba(255,255,255,0.1)' : 'linear-gradient(135deg,#fbbf24,#f59e0b)',
+                  border:'none', borderRadius:'12px', color: chestClaimed ? 'rgba(255,255,255,0.4)' : '#1e1b4b',
+                  cursor: chestClaimed ? 'not-allowed' : 'pointer'
+                }}>
+                  {chestClaimed ? '✓ Claimed Today' : 'Claim!'}
+                </button>
+                {chestMsg && <div style={{ color:'#34d399', fontSize:'0.85rem', marginTop:'8px' }}>{chestMsg}</div>}
+              </div>
+
+              {/* Skin Preview */}
+              <div style={{ background:'rgba(139,92,246,0.08)', border:'2px solid rgba(139,92,246,0.3)', borderRadius:'20px', padding:'25px', textAlign:'center' }}>
+                <div style={{ fontSize:'3rem', marginBottom:'10px' }}>🌮</div>
+                <h3 style={{ color:'#a78bfa', marginBottom:'8px' }}>Pug Taco Shrine</h3>
+                <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'0.8rem' }}>The rarest skin. 800 coins in the shop.</p>
+                <div style={{ marginTop:'12px', color:'rgba(0,255,136,0.7)', fontSize:'0.8rem', fontStyle:'italic' }}>
+                  "Half dog. Half taco. 100% legendary."
+                </div>
+              </div>
+
+              {/* Konami hint */}
+              <div style={{ gridColumn:'1/-1', background:'rgba(99,102,241,0.08)', border:'2px solid rgba(99,102,241,0.3)', borderRadius:'20px', padding:'25px', textAlign:'center' }}>
+                <h3 style={{ color:'#818cf8', marginBottom:'10px' }}>🕹️ You Used the Konami Code</h3>
+                <p style={{ color:'rgba(255,255,255,0.5)', fontSize:'0.9rem' }}>↑ ↑ ↓ ↓ ← → ← → B A — The classic cheat lives on.</p>
+                <div style={{ color:'#34d399', fontSize:'0.8rem', marginTop:'6px' }}>Congratulations. You are a person of culture.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============== MAIN COMPONENT ==============
+    function BrainStormRoyale() {
+      const [screen, setScreen] = useState('auth');
+      const [playerData, setPlayerData] = useState(null);
+      const [gameSettings, setGameSettings] = useState({ mode:'solo', matchLength:5, playerCount:20, roomCode:'' });
+      const [gameResult, setGameResult] = useState(null);
+      const [showAdmin, setShowAdmin] = useState(false);
+      const [testMode, setTestMode] = useState(false);
+      const [aimbotMode, setAimbotMode] = useState(false);
+      const konamiRef = useRef([]);
+      const KONAMI = ['arrowup','arrowup','arrowdown','arrowdown','arrowleft','arrowright','arrowleft','arrowright','b','a'];
+
+      // Load saved session on mount
+      useEffect(() => {
+        const auth = loadAuth();
+        if (auth) {
+          const saved = loadGame();
+          if (saved && saved.username === auth.username) {
+            setPlayerData(saved);
+            setScreen('menu');
+          }
+        }
+      }, []);
+
+      // Admin shortcut + Konami code
+      useEffect(() => {
+        const handleKey = (e) => {
+          // Ctrl+Shift+A = admin panel
+          if (e.ctrlKey && e.shiftKey && e.key === 'A' && playerData && isAdmin(playerData.username)) {
+            setShowAdmin(v => !v);
+          }
+          // Konami code
+          const key = e.key.toLowerCase();
+          konamiRef.current = [...konamiRef.current, key].slice(-10);
+          if (konamiRef.current.join(',') === KONAMI.join(',')) {
+            setScreen('devroom');
+            konamiRef.current = [];
+          }
+        };
+        window.addEventListener('keydown', handleKey);
+        return () => window.removeEventListener('keydown', handleKey);
+      }, [playerData]);
+
+      const handleLogin = (pd) => {
+        setPlayerData(pd);
+        if (!pd.username.startsWith('Guest')) saveGame(pd);
+        setScreen('menu');
+      };
+
+      const handleLogout = () => {
+        try { localStorage.removeItem(AUTH_KEY); } catch(e) {}
+        setPlayerData(null);
+        setScreen('auth');
+      };
+
+      const startGame = () => setScreen('game');
+
+      const endGame = (result) => {
+        // Handle both local and server result formats
+        const coinsEarned = result.coinsEarned || (result.kills * 50 + (result.placement === 1 ? 250 : 0));
+        const xpEarned    = result.xpEarned    || (result.kills * 25 + (result.placement === 1 ? 120 : 15));
+        const finalResult = { ...result, coinsEarned, xpEarned };
+        setGameResult(finalResult);
+        setPlayerData(prev => {
+          const updated = {
+            ...prev,
+            coins: prev.coins + coinsEarned,
+            xp: prev.xp + xpEarned,
+            level: Math.floor((prev.xp + xpEarned) / 100) + 1,
+            stats: {
+              ...prev.stats,
+              gamesPlayed: prev.stats.gamesPlayed + 1,
+              kills: prev.stats.kills + (result.kills||0),
+              wins: prev.stats.wins + (result.placement === 1 ? 1 : 0)
+            }
+          };
+          if (!testMode && !prev.username.startsWith('Guest')) saveGame(updated);
+          return updated;
+        });
+        setScreen('results');
+      };
+
+      const buyItem = (type, item) => {
+        if (playerData.coins >= item.price && !playerData[type+'s'].includes(item.id)) {
+          setPlayerData(prev => {
+            const updated = { ...prev, coins: prev.coins - item.price, [type+'s']: [...prev[type+'s'], item.id] };
+            if (!testMode && !prev.username.startsWith('Guest')) saveGame(updated);
+            return updated;
+          });
+        }
+      };
+
+      const selectItem = (type, id) => {
+        setPlayerData(prev => {
+          const updated = { ...prev, ['selected'+type.charAt(0).toUpperCase()+type.slice(1)]: id };
+          if (!testMode && !prev.username.startsWith('Guest')) saveGame(updated);
+          return updated;
+        });
+      };
+
+      if (!playerData && screen === 'auth') return <AuthScreen onLogin={handleLogin} />;
+
+      return (
+        <div style={styles.app}>
+          {/* Test Mode banner */}
+          {testMode && (
+            <div style={{ position:'fixed', top:0, left:0, right:0, zIndex:99998, textAlign:'center', padding:'6px', fontWeight:800, fontSize:'0.9rem', color:'#fff', animation:'testBanner 1s infinite', letterSpacing:'2px' }}>
+              🧪 TEST MODE ACTIVE — NO DATA WILL BE SAVED 🧪
+            </div>
+          )}
+
+          {/* Admin gear button */}
+          {playerData && isAdmin(playerData.username) && (
+            <button onClick={() => setShowAdmin(v=>!v)} title="Admin Panel (Ctrl+Shift+A)" style={{
+              position:'fixed', bottom:'20px', right:'20px', zIndex:9997,
+              background:'rgba(124,58,237,0.9)', border:'2px solid #a78bfa',
+              borderRadius:'50%', width:'48px', height:'48px', fontSize:'1.2rem',
+              cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center',
+              boxShadow:'0 0 20px rgba(124,58,237,0.6)'
+            }}>⚙️</button>
+          )}
+
+          {showAdmin && playerData && (
+            <AdminPanel
+              playerData={playerData} setPlayerData={setPlayerData}
+              onClose={() => setShowAdmin(false)}
+              testMode={testMode} setTestMode={setTestMode}
+              aimbotMode={aimbotMode} setAimbotMode={setAimbotMode}
+            />
+          )}
+
+          {screen === 'auth'     && <AuthScreen onLogin={handleLogin} />}
+          {screen === 'menu'     && <MainMenu playerData={playerData} onPlay={() => setScreen('lobby')} onShop={() => setScreen('shop')} onSettings={() => setScreen('settings')} onLogout={handleLogout} />}
+          {screen === 'lobby'    && <Lobby settings={gameSettings} setSettings={setGameSettings} onStart={startGame} onBack={() => setScreen('menu')} />}
+          {screen === 'shop'     && <Shop playerData={playerData} onBuy={buyItem} onSelect={selectItem} onBack={() => setScreen('menu')} />}
+          {screen === 'settings' && <Settings playerData={playerData} setPlayerData={setPlayerData} onBack={() => setScreen('menu')} testMode={testMode} />}
+          {screen === 'game'     && <MultiplayerGame playerData={playerData} settings={gameSettings} onEnd={endGame} aimbotMode={aimbotMode} testMode={testMode} />}
+          {screen === 'results'  && <Results result={gameResult} onPlayAgain={startGame} onMenu={() => setScreen('menu')} testMode={testMode} />}
+          {screen === 'devroom'  && <DevRoom onBack={() => setScreen('menu')} />}
+        </div>
+      );
+    }
+
+    // ============== MAIN MENU ==============
+    function MainMenu({ playerData, onPlay, onShop, onSettings, onLogout }) {
+      const [hoveredButton, setHoveredButton] = useState(null);
+      const isGuest = playerData.username.startsWith('Guest');
+
+      return (
+        <div style={styles.menuContainer}>
+          <FloatingShapes />
+          <div style={styles.menuContent}>
+            <div style={styles.logoSection}>
+              <div style={styles.logoIcon}>🧠⚡</div>
+              <h1 style={styles.logoTitle}>
+                <span style={styles.logoBrain}>Brain</span>
+                <span style={styles.logoStorm}>Storm</span>
+              </h1>
+              <div style={styles.logoRoyale}>ROYALE</div>
+              <p style={styles.tagline}>Answer. Build. Survive. Win!</p>
+            </div>
+
+            <div style={styles.playerCard}>
+              <div style={{ ...styles.playerAvatar, background:`linear-gradient(135deg, ${SKINS.find(s=>s.id===playerData.selectedSkin)?.color}, ${SKINS.find(s=>s.id===playerData.selectedSkin)?.color}dd)` }}>
+                <span style={styles.avatarEmoji}>{SKINS.find(s=>s.id===playerData.selectedSkin)?.emoji || '😎'}</span>
+              </div>
+              <div style={styles.playerDetails}>
+                <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                  <div style={styles.playerName}>{playerData.username}</div>
+                  {isOwner(playerData.username) && <span title="Owner" style={{ fontSize:'1.1rem' }}>👑</span>}
+                  {!isOwner(playerData.username) && isAdmin(playerData.username) && <span title="Admin" style={{ fontSize:'1rem' }}>🛡️</span>}
+                </div>
+                <div style={styles.playerLevelBar}>
+                  <div style={styles.levelBadge}>LVL {playerData.level}</div>
+                  <div style={styles.xpBar}><div style={{...styles.xpFill, width:`${playerData.xp % 100}%`}} /></div>
+                </div>
+              </div>
+              <div style={styles.coinDisplay}>
+                <span style={styles.coinIcon}>🪙</span>
+                <span style={styles.coinAmount}>{playerData.coins.toLocaleString()}</span>
+              </div>
+            </div>
+
+            <div style={styles.buttonGroup}>
+              <button style={{ ...styles.playButton, transform: hoveredButton==='play' ? 'scale(1.05) translateY(-4px)' : 'scale(1)', boxShadow: hoveredButton==='play' ? '0 20px 40px rgba(139,92,246,0.5)' : '0 10px 30px rgba(139,92,246,0.4)' }}
+                onMouseEnter={()=>setHoveredButton('play')} onMouseLeave={()=>setHoveredButton(null)} onClick={onPlay}>
+                <span style={styles.playButtonIcon}>▶</span>
+                <span style={styles.playButtonText}>PLAY</span>
+              </button>
+              <div style={styles.secondaryButtons}>
+                <button style={{ ...styles.secondaryButton, ...styles.shopButton, transform: hoveredButton==='shop' ? 'scale(1.05) translateY(-3px)' : 'scale(1)' }}
+                  onMouseEnter={()=>setHoveredButton('shop')} onMouseLeave={()=>setHoveredButton(null)} onClick={onShop}>
+                  <span style={styles.btnIcon}>🛍️</span><span>Shop</span>
+                </button>
+                <button style={{ ...styles.secondaryButton, ...styles.settingsButton, transform: hoveredButton==='settings' ? 'scale(1.05) translateY(-3px)' : 'scale(1)' }}
+                  onMouseEnter={()=>setHoveredButton('settings')} onMouseLeave={()=>setHoveredButton(null)} onClick={onSettings}>
+                  <span style={styles.btnIcon}>⚙️</span><span>Settings</span>
+                </button>
+              </div>
+            </div>
+
+            <div style={styles.statsRow}>
+              <div style={styles.statBox}><span style={styles.statEmoji}>🏆</span><span style={styles.statNumber}>{playerData.stats.wins}</span><span style={styles.statLabel}>Wins</span></div>
+              <div style={styles.statBox}><span style={styles.statEmoji}>💀</span><span style={styles.statNumber}>{playerData.stats.kills}</span><span style={styles.statLabel}>Eliminations</span></div>
+              <div style={styles.statBox}><span style={styles.statEmoji}>🎮</span><span style={styles.statNumber}>{playerData.stats.gamesPlayed}</span><span style={styles.statLabel}>Games</span></div>
+            </div>
+
+            <button onClick={onLogout} style={{ background:'rgba(239,68,68,0.15)', border:'2px solid rgba(239,68,68,0.3)', borderRadius:'20px', color:'rgba(255,255,255,0.5)', padding:'10px 24px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem' }}>
+              {isGuest ? '🔑 Login / Sign Up' : '🚪 Log Out'}
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ============== LOBBY ==============
+    function Lobby({ settings, setSettings, onStart, onBack }) {
+      const [searching, setSearching] = useState(false);
+      const [playersFound, setPlayersFound] = useState(1);
+      const [selectedMode, setSelectedMode] = useState(settings.mode);
+
+      useEffect(() => {
+        if (searching) {
+          const interval = setInterval(() => {
+            setPlayersFound(prev => {
+              if (prev >= settings.playerCount) { clearInterval(interval); setTimeout(onStart, 500); return prev; }
+              return Math.min(prev + Math.floor(Math.random()*4)+1, settings.playerCount);
+            });
+          }, 200);
+          return () => clearInterval(interval);
+        }
+      }, [searching, settings.playerCount, onStart]);
+
+      const [privateCode, setPrivateCode] = useState(settings.roomCode || '');
+      return (
+        <div style={styles.lobbyContainer}>
+          <FloatingShapes colors={['#8b5cf6','#a78bfa','#c4b5fd']} />
+          <button style={styles.backBtn} onClick={onBack}>← Back</button>
+          <div style={styles.lobbyContent}>
+            <h1 style={styles.lobbyTitle}><span style={styles.lobbyIcon}>🎯</span>Choose Your Mode</h1>
+            <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'20px', padding:'20px 25px', marginBottom:'20px' }}>
+              <div style={{ color:'#a5b4fc', fontSize:'0.85rem', marginBottom:'10px' }}>🔑 Private Room (optional)</div>
+              <div style={{ display:'flex', gap:'10px' }}>
+                <input value={privateCode} onChange={e=>{ setPrivateCode(e.target.value.toUpperCase()); setSettings(s=>({...s,roomCode:e.target.value.toUpperCase()})); }} placeholder="Enter room code or leave blank for public..." maxLength={8}
+                  style={{ flex:1, padding:'12px 16px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none', letterSpacing:'3px', textTransform:'uppercase' }} />
+                <button onClick={()=>{ setPrivateCode(''); setSettings(s=>({...s,roomCode:''})); }} style={{ padding:'12px 18px', background:'rgba(239,68,68,0.2)', border:'2px solid rgba(239,68,68,0.3)', borderRadius:'15px', color:'#f87171', cursor:'pointer', fontFamily:'inherit' }}>✕</button>
+              </div>
+              <div style={{ color:'rgba(255,255,255,0.3)', fontSize:'0.78rem', marginTop:'8px' }}>{privateCode ? `Joining private room: ${privateCode}` : 'No code = join public matchmaking'}</div>
+            </div>
+            {!searching ? (
+              <>
+                <div style={styles.modeGrid}>
+                  {[{id:'solo',icon:'🧍',name:'Solo',desc:'Every player for themselves!'},{id:'duos',icon:'👫',name:'Duos',desc:'Team up with a partner!'},{id:'squads',icon:'👨‍👩‍👧‍👦',name:'Squads',desc:'Join forces with a squad!'}].map(mode => (
+                    <button key={mode.id} style={{ ...styles.modeCard, ...(selectedMode===mode.id ? styles.modeCardActive : {}) }} onClick={() => { setSelectedMode(mode.id); setSettings(s=>({...s,mode:mode.id})); }}>
+                      <span style={styles.modeIcon}>{mode.icon}</span>
+                      <span style={styles.modeName}>{mode.name}</span>
+                      <span style={styles.modeDesc}>{mode.desc}</span>
+                      {selectedMode===mode.id && <div style={styles.modeCheck}>✓</div>}
+                    </button>
+                  ))}
+                </div>
+                <div style={styles.settingsCard}>
+                  <h3 style={styles.settingsTitle}>⏱️ Match Length</h3>
+                  <div style={styles.timeOptions}>
+                    {[3,5,10,15].map(mins => (
+                      <button key={mins} style={{ ...styles.timeOption, ...(settings.matchLength===mins ? styles.timeOptionActive : {}) }} onClick={() => setSettings(s=>({...s,matchLength:mins}))}>
+                        {mins} min
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button style={styles.startButton} onClick={() => setSearching(true)}><span style={styles.startIcon}>🚀</span>Find Match</button>
+              </>
+            ) : (
+              <div style={styles.searchingBox}>
+                <div style={styles.searchingAnimation}>
+                  <div style={styles.searchRing}></div>
+                  <div style={styles.searchRing2}></div>
+                  <span style={styles.searchEmoji}>🔍</span>
+                </div>
+                <h2 style={styles.searchingTitle}>Finding Players...</h2>
+                <div style={styles.playerCounter}>
+                  <span style={styles.playerCount}>{Math.min(playersFound,settings.playerCount)}</span>
+                  <span style={styles.playerDivider}>/</span>
+                  <span style={styles.playerTotal}>{settings.playerCount}</span>
+                </div>
+                <div style={styles.matchProgress}>
+                  <div style={{ ...styles.matchProgressFill, width:`${(playersFound/settings.playerCount)*100}%` }} />
+                </div>
+                <button style={styles.cancelBtn} onClick={() => { setSearching(false); setPlayersFound(1); }}>Cancel</button>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ============== SHOP ==============
+    function Shop({ playerData, onBuy, onSelect, onBack }) {
+      const [tab, setTab] = useState('skins');
+      const [hoveredItem, setHoveredItem] = useState(null);
+      return (
+        <div style={styles.shopContainer}>
+          <FloatingShapes colors={['#ec4899','#f472b6','#fbbf24','#a78bfa']} />
+          <div style={styles.shopHeader}>
+            <button style={styles.backBtn} onClick={onBack}>← Back</button>
+            <h1 style={styles.shopTitle}><span>🛍️</span> Item Shop</h1>
+            <div style={styles.shopCoins}><span style={styles.coinIcon}>🪙</span><span>{playerData.coins.toLocaleString()}</span></div>
+          </div>
+          <div style={styles.shopTabs}>
+            <button style={{...styles.shopTab,...(tab==='skins'?styles.shopTabActive:{})}} onClick={()=>setTab('skins')}><span>👤</span> Skins</button>
+            <button style={{...styles.shopTab,...(tab==='emotes'?styles.shopTabActive:{})}} onClick={()=>setTab('emotes')}><span>🎭</span> Emotes</button>
+          </div>
+          <div style={styles.shopGrid}>
+            {tab==='skins' && SKINS.map(skin => {
+              const owned = playerData.skins.includes(skin.id);
+              const selected = playerData.selectedSkin === skin.id;
+              return (
+                <div key={skin.id} style={{ ...styles.shopItem, ...(selected?styles.shopItemSelected:{}), ...(owned&&!selected?styles.shopItemOwned:{}), transform: hoveredItem===skin.id?'scale(1.05) translateY(-5px)':'scale(1)', boxShadow: hoveredItem===skin.id?`0 15px 30px ${skin.color}40`:'0 5px 15px rgba(0,0,0,0.1)', ...(skin.special ? { border:'3px solid #d97706', boxShadow:'0 0 20px rgba(217,119,6,0.3)' } : {}) }}
+                  onMouseEnter={()=>setHoveredItem(skin.id)} onMouseLeave={()=>setHoveredItem(null)}>
+                  <div style={{ ...styles.skinPreview, background:`linear-gradient(135deg,${skin.color},${skin.color}aa)`, boxShadow:`0 10px 30px ${skin.color}50`, position:'relative' }}>
+                    <span style={styles.skinEmoji}>{skin.emoji || '😊'}</span>
+                    {skin.special && <div style={{ position:'absolute', top:'-8px', right:'-8px', background:'linear-gradient(135deg,#d97706,#b45309)', borderRadius:'20px', padding:'2px 8px', fontSize:'0.65rem', fontWeight:800, color:'#fff' }}>RARE</div>}
+                  </div>
+                  <div style={styles.itemName}>{skin.name}</div>
+                  {owned ? (
+                    <button style={{ ...styles.itemBtn, ...(selected?styles.itemBtnEquipped:styles.itemBtnOwned) }} onClick={()=>onSelect('skin',skin.id)}>
+                      {selected ? '✓ Equipped' : 'Equip'}
+                    </button>
+                  ) : (
+                    <button style={{ ...styles.itemBtn, ...(playerData.coins>=skin.price?styles.itemBtnBuy:styles.itemBtnLocked) }} onClick={()=>onBuy('skin',skin)} disabled={playerData.coins<skin.price}>
+                      <span>🪙</span> {skin.price}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {tab==='emotes' && EMOTES.map(emote => {
+              const owned = playerData.emotes.includes(emote.id);
+              const selected = playerData.selectedEmote === emote.id;
+              return (
+                <div key={emote.id} style={{ ...styles.shopItem, ...(selected?styles.shopItemSelected:{}), ...(owned&&!selected?styles.shopItemOwned:{}), transform:hoveredItem===emote.id?'scale(1.05) translateY(-5px)':'scale(1)' }}
+                  onMouseEnter={()=>setHoveredItem(emote.id)} onMouseLeave={()=>setHoveredItem(null)}>
+                  <div style={styles.emotePreview}><span style={styles.emoteEmoji}>{emote.emoji}</span></div>
+                  <div style={styles.itemName}>{emote.name}</div>
+                  {owned ? (
+                    <button style={{ ...styles.itemBtn, ...(selected?styles.itemBtnEquipped:styles.itemBtnOwned) }} onClick={()=>onSelect('emote',emote.id)}>
+                      {selected ? '✓ Equipped' : 'Equip'}
+                    </button>
+                  ) : (
+                    <button style={{ ...styles.itemBtn, ...(playerData.coins>=emote.price?styles.itemBtnBuy:styles.itemBtnLocked) }} onClick={()=>onBuy('emote',emote)} disabled={playerData.coins<emote.price}>
+                      <span>🪙</span> {emote.price}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ============== SETTINGS ==============
+    function Settings({ playerData, setPlayerData, onBack, testMode }) {
+      const [username, setUsername] = useState(playerData.username);
+      const [saved, setSaved] = useState(false);
+      const saveUsername = () => {
+        if (username.trim()) {
+          setPlayerData(prev => { const n = { ...prev, username: username.trim() }; if (!testMode && !prev.username.startsWith('Guest')) saveGame(n); return n; });
+          setSaved(true); setTimeout(()=>setSaved(false), 2000);
+        }
+      };
+      return (
+        <div style={styles.settingsContainer}>
+          <FloatingShapes colors={['#06b6d4','#22d3ee','#67e8f9']} />
+          <button style={styles.backBtn} onClick={onBack}>← Back</button>
+          <div style={styles.settingsContent}>
+            <h1 style={styles.settingsTitle2}><span>⚙️</span> Settings</h1>
+            {testMode && <div style={{ background:'rgba(239,68,68,0.2)', border:'2px solid #ef4444', borderRadius:'15px', padding:'12px 20px', color:'#f87171', textAlign:'center', marginBottom:'15px', fontSize:'0.9rem' }}>🧪 Test Mode: changes won't be saved</div>}
+            <div style={styles.settingsCard2}>
+              <h3 style={styles.cardTitle}><span>👤</span> Profile</h3>
+              <div style={styles.inputGroup}>
+                <label style={styles.inputLabel}>Username</label>
+                <div style={styles.inputRow}>
+                  <input type="text" value={username} onChange={e=>setUsername(e.target.value)} style={styles.textInput} maxLength={16} placeholder="Enter username..." />
+                  <button style={{ ...styles.saveBtn, background: saved?'linear-gradient(135deg,#10b981,#34d399)':'linear-gradient(135deg,#8b5cf6,#a78bfa)' }} onClick={saveUsername}>
+                    {saved ? '✓ Saved!' : 'Save'}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div style={styles.settingsCard2}>
+              <h3 style={styles.cardTitle}><span>🎮</span> Controls</h3>
+              <div style={styles.controlsGrid}>
+                {[{action:'Move',key:'W A S D',icon:'🏃'},{action:'Aim',key:'Mouse',icon:'🎯'},{action:'Shoot',key:'Left Click',icon:'💥'},{action:'Build',key:'B',icon:'🧱'},{action:'Interact',key:'E',icon:'✋'},{action:'Emote',key:'T',icon:'🎭'},{action:'Switch Weapon',key:'Scroll / 1-4',icon:'🔫'}].map(c => (
+                  <div key={c.action} style={styles.controlRow}>
+                    <div style={styles.controlAction}><span>{c.icon}</span><span>{c.action}</span></div>
+                    <div style={styles.controlKey}>{c.key}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============== GAME ==============
+
+    // ============== MULTIPLAYER GAME ==============
+    const SERVER_URL = window.SOCKET_SERVER_URL || 'http://localhost:3001';
+
+    function MultiplayerGame({ playerData, settings, onEnd, aimbotMode, testMode }) {
+      const canvasRef      = useRef(null);
+      const socketRef      = useRef(null);
+      const gameStateRef   = useRef(null);
+      const keysRef        = useRef({});
+      const mouseRef       = useRef({ x:0, y:0, down:false, angle:0 });
+      const inputIntervalRef = useRef(null);
+      const renderRef      = useRef(null);
+      const myIdRef        = useRef(null);
+      const emoteTimers    = useRef({});
+
+      const [phase, setPhase]         = useState('connecting');  // connecting|waiting|countdown|active|dead|ended
+      const [countdown, setCountdown] = useState(15);
+      const [roomId, setRoomId]       = useState('');
+      const [hud, setHud]             = useState({ health:100, shield:0, ammo:35, materials:50, weapon:'pistol', weapons:['pistol'], alive:0, kills:0, timeLeft:300, ping:0 });
+      const [notification, setNotification] = useState(null);
+      const [triviaPopup, setTriviaPopup]   = useState(null);
+      const [waitingPlayers, setWaitingPlayers] = useState([]);
+      const [deathInfo, setDeathInfo]           = useState(null);
+      const [pingMs, setPingMs]                 = useState(0);
+      const [emotes, setEmotes]                 = useState({});  // playerId -> emoji
+
+      const showNotif = useCallback((text, icon='✨', color='#8b5cf6') => {
+        setNotification({ text, icon, color });
+        setTimeout(() => setNotification(null), 2500);
+      }, []);
+
+      // ── Connect & join ──────────────────────────────────────────────────────
+      useEffect(() => {
+        const socket = window.io(SERVER_URL, { transports:['websocket'], reconnectionAttempts:3 });
+        socketRef.current = socket;
+
+        socket.on('connect', () => {
+          myIdRef.current = socket.id;
+          socket.emit('joinGame', {
+            username: playerData.username,
+            skin:     playerData.selectedSkin || 'default',
+            roomCode: settings.roomCode || null,
+          });
+          setPhase('waiting');
+        });
+
+        socket.on('connect_error', () => setPhase('error'));
+
+        socket.on('joinedRoom', ({ roomId, phase: rPhase, players, loot, stations }) => {
+          setRoomId(roomId);
+          setWaitingPlayers(players);
+          gameStateRef.current = {
+            players:{}, bots:{}, bullets:[], loot, stations,
+            buildings:[], storm:{ x:1000,y:1000,radius:1400 },
+            timeLeft:300, alive:players.length,
+          };
+          players.forEach(p => { gameStateRef.current.players[p.id] = p; });
+          if (rPhase === 'countdown') setPhase('countdown');
+        });
+
+        socket.on('playerJoined', (p) => {
+          setWaitingPlayers(prev => [...prev.filter(x=>x.id!==p.id), p]);
+          if (gameStateRef.current) gameStateRef.current.players[p.id] = p;
+          showNotif(`${p.username} joined!`, '👋', '#10b981');
+        });
+
+        socket.on('playerLeft', ({ id }) => {
+          setWaitingPlayers(prev => prev.filter(p=>p.id!==id));
+          if (gameStateRef.current) delete gameStateRef.current.players[id];
+        });
+
+        socket.on('countdownStart', ({ seconds }) => {
+          setCountdown(seconds);
+          setPhase('countdown');
+        });
+
+        socket.on('countdown', ({ seconds }) => setCountdown(seconds));
+
+        socket.on('matchStart', ({ loot, stations }) => {
+          if (gameStateRef.current) {
+            gameStateRef.current.loot     = loot;
+            gameStateRef.current.stations = stations;
+          }
+          setPhase('active');
+        });
+
+        socket.on('gameState', (state) => {
+          const gs = gameStateRef.current;
+          if (!gs) return;
+          // Merge server state (server is authoritative)
+          gs.bullets   = state.bullets;
+          gs.loot      = state.loot;
+          gs.buildings = state.buildings;
+          gs.storm     = state.storm;
+          gs.timeLeft  = state.timeLeft;
+          gs.alive     = state.alive;
+
+          const newPlayers = {};
+          state.players.forEach(p => { newPlayers[p.id] = p; });
+          gs.players = newPlayers;
+
+          const newBots = {};
+          state.bots.forEach(b => { newBots[b.id] = b; });
+          gs.bots = newBots;
+
+          // Update HUD from own player
+          const me = gs.players[myIdRef.current];
+          if (me) {
+            setHud(h => ({ ...h, health:me.health, shield:me.shield, ammo:me.ammo, materials:me.materials, weapon:me.currentWeapon, weapons:me.weapons, alive:gs.alive, kills:me.kills, timeLeft:gs.timeLeft }));
+          }
+        });
+
+        socket.on('lootPickup', ({ itemId, player }) => {
+          if (player.id === myIdRef.current) showNotif('Picked up item!','📦','#a78bfa');
+        });
+
+        socket.on('triviaPrompt', ({ stationId, question }) => {
+          setTriviaPopup({ stationId, question });
+        });
+
+        socket.on('triviaResult', ({ correct, reward, player }) => {
+          if (correct) {
+            showNotif(`${reward.name}! Correct answer!`,'🧠','#10b981');
+          } else {
+            showNotif('Wrong answer!','❌','#ef4444');
+          }
+          setTriviaPopup(null);
+        });
+
+        socket.on('killConfirmed', ({ victim, kills }) => {
+          showNotif(`Eliminated ${victim}!`,'💀','#ef4444');
+        });
+
+        socket.on('playerDied', ({ id, username }) => {
+          if (id !== myIdRef.current) showNotif(`${username} eliminated!`,'💀','#6b7280');
+        });
+
+        socket.on('playerEmote', ({ playerId, emoji }) => {
+          setEmotes(prev => ({ ...prev, [playerId]: emoji }));
+          clearTimeout(emoteTimers.current[playerId]);
+          emoteTimers.current[playerId] = setTimeout(() => {
+            setEmotes(prev => { const n={...prev}; delete n[playerId]; return n; });
+          }, 2500);
+        });
+
+        socket.on('youDied', ({ placement, kills, killedBy }) => {
+          setDeathInfo({ placement, kills, killedBy });
+          setPhase('dead');
+        });
+
+        socket.on('matchEnd', (result) => {
+          setTimeout(() => onEnd(result), 500);
+        });
+
+        // Ping measurement
+        const pingInterval = setInterval(() => {
+          const t0 = Date.now();
+          socket.emit('ping', () => setPingMs(Date.now() - t0));
+        }, 3000);
+
+        return () => {
+          socket.disconnect();
+          clearInterval(pingInterval);
+          cancelAnimationFrame(renderRef.current);
+          clearInterval(inputIntervalRef.current);
+        };
+      }, []);
+
+      // ── Input sending loop (20/s) ─────────────────────────────────────────
+      useEffect(() => {
+        if (phase !== 'active') return;
+        inputIntervalRef.current = setInterval(() => {
+          if (!socketRef.current) return;
+          const keys = keysRef.current;
+          socketRef.current.emit('input', {
+            up:       !!(keys.w || keys.arrowup),
+            down:     !!(keys.s || keys.arrowdown),
+            left:     !!(keys.a || keys.arrowleft),
+            right:    !!(keys.d || keys.arrowright),
+            shooting: mouseRef.current.down && !triviaPopup,
+            aimAngle: mouseRef.current.angle,
+            interact: !!(keys.e),
+          });
+          if (keys.e) keysRef.current.e = false;
+        }, 50);
+        return () => clearInterval(inputIntervalRef.current);
+      }, [phase, triviaPopup]);
+
+      // ── Canvas render loop ────────────────────────────────────────────────
+      useEffect(() => {
+        if (phase !== 'active' && phase !== 'dead') return;
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+
+        const SKINS_MAP = {
+          default:'#8b5cf6', bubblegum:'#ec4899', mint:'#10b981', ocean:'#0ea5e9',
+          sunset:'#f97316', golden:'#eab308', galaxy:'#6366f1', cherry:'#ef4444', pug_taco:'#d97706'
+        };
+        const SKIN_EMOJI = {
+          default:'😎', bubblegum:'🍬', mint:'🌿', ocean:'🌊',
+          sunset:'🌅', golden:'⭐', galaxy:'🌌', cherry:'🍒', pug_taco:'🌮'
+        };
+        const WEAPON_COLORS = {
+          pistol:'#a78bfa', shotgun:'#f472b6', rifle:'#60a5fa', sniper:'#34d399',
+          smg:'#f59e0b', rocket:'#ef4444', laser:'#06b6d4', grenade:'#84cc16',
+          crossbow:'#8b5cf6', minigun:'#fb923c'
+        };
+
+        const render = () => {
+          const gs = gameStateRef.current;
+          if (!gs) { renderRef.current = requestAnimationFrame(render); return; }
+
+          const me = gs.players[myIdRef.current];
+          const camX = me ? me.x - canvas.width/2  : MAP_SIZE/2 - canvas.width/2;
+          const camY = me ? me.y - canvas.height/2 : MAP_SIZE/2 - canvas.height/2;
+
+          // Background
+          const bg = ctx.createLinearGradient(0,0,canvas.width,canvas.height);
+          bg.addColorStop(0,'#1e293b'); bg.addColorStop(1,'#0f172a');
+          ctx.fillStyle = bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+          // Grid
+          ctx.strokeStyle = 'rgba(139,92,246,0.08)'; ctx.lineWidth = 1;
+          const gs2 = 100;
+          for (let x=(-camX%gs2);x<canvas.width;x+=gs2){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
+          for (let y=(-camY%gs2);y<canvas.height;y+=gs2){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+
+          // Storm
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0,0,canvas.width,canvas.height);
+          ctx.arc(gs.storm.x-camX, gs.storm.y-camY, gs.storm.radius, 0, Math.PI*2, true);
+          ctx.fillStyle = 'rgba(139,92,246,0.38)'; ctx.fill();
+          ctx.restore();
+          ctx.strokeStyle='#a78bfa'; ctx.lineWidth=4; ctx.setLineDash([20,10]);
+          ctx.beginPath(); ctx.arc(gs.storm.x-camX,gs.storm.y-camY,gs.storm.radius,0,Math.PI*2); ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Trivia stations
+          gs.stations?.forEach(st => {
+            const sx=st.x-camX, sy=st.y-camY;
+            if(sx<-100||sx>canvas.width+100||sy<-100||sy>canvas.height+100) return;
+            const glow=ctx.createRadialGradient(sx,sy,0,sx,sy,st.radius+20);
+            glow.addColorStop(0,st.used?'rgba(80,80,80,0.3)':'rgba(236,72,153,0.35)'); glow.addColorStop(1,'transparent');
+            ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(sx,sy,st.radius+20,0,Math.PI*2); ctx.fill();
+            ctx.beginPath(); ctx.arc(sx,sy,st.radius,0,Math.PI*2);
+            ctx.fillStyle=st.used?'rgba(80,80,80,0.5)':'rgba(236,72,153,0.55)'; ctx.fill();
+            ctx.strokeStyle=st.used?'#555':'#ec4899'; ctx.lineWidth=4; ctx.stroke();
+            ctx.fillStyle='#fff'; ctx.font='bold 26px Arial'; ctx.textAlign='center';
+            ctx.fillText(st.used?'✓':'🧠',sx,sy+9);
+          });
+
+          // Loot
+          const LOOT_COLORS = { weapon:'#fbbf24', ammo:'#a78bfa', materials:'#fb923c', health:'#f472b6' };
+          const LOOT_ICONS  = { ammo:'📦', materials:'🧱', health:'💖' };
+          const WEAPON_ICONS= { pistol:'🔫',shotgun:'💥',rifle:'🎯',sniper:'🔭',smg:'🌀',rocket:'🚀',laser:'🔆',grenade:'💣',crossbow:'🏹',minigun:'⚙️' };
+          gs.loot?.forEach(item => {
+            const lx=item.x-camX, ly=item.y-camY;
+            if(lx<-30||lx>canvas.width+30||ly<-30||ly>canvas.height+30) return;
+            const col = LOOT_COLORS[item.type]||'#fff';
+            ctx.shadowColor=col; ctx.shadowBlur=14;
+            ctx.beginPath(); ctx.arc(lx,ly,17,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+            ctx.shadowBlur=0; ctx.fillStyle='#fff'; ctx.font='13px Arial'; ctx.textAlign='center';
+            ctx.fillText(item.type==='weapon'?(WEAPON_ICONS[item.weapon]||'🔫'):LOOT_ICONS[item.type]||'?',lx,ly+5);
+          });
+
+          // Buildings
+          gs.buildings?.forEach(bld => {
+            ctx.save(); ctx.translate(bld.x-camX,bld.y-camY); ctx.rotate(bld.angle);
+            ctx.fillStyle=`rgba(251,146,60,${0.4+(bld.health/120)*0.6})`; ctx.shadowColor='#fb923c'; ctx.shadowBlur=8;
+            ctx.fillRect(-bld.w/2,-bld.h/2,bld.w,bld.h);
+            ctx.shadowBlur=0; ctx.strokeStyle='#fed7aa'; ctx.lineWidth=2;
+            ctx.strokeRect(-bld.w/2,-bld.h/2,bld.w,bld.h);
+            ctx.restore();
+          });
+
+          // All players & bots
+          const allToRender = [
+            ...Object.values(gs.players),
+            ...Object.values(gs.bots||{}),
+          ];
+
+          allToRender.forEach(p => {
+            if (p.dead) return;
+            const px=p.x-camX, py=p.y-camY;
+            if(px<-60||px>canvas.width+60||py<-60||py>canvas.height+60) return;
+
+            const isMe = p.id === myIdRef.current;
+            const col  = SKINS_MAP[p.skin] || (p.isBot ? '#ef4444' : '#8b5cf6');
+            const emoji= p.isBot ? '😈' : (SKIN_EMOJI[p.skin] || '😎');
+
+            // Aim line for self
+            if (isMe) {
+              ctx.strokeStyle='rgba(255,255,255,0.35)'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+              ctx.beginPath(); ctx.moveTo(px,py);
+              ctx.lineTo(px+Math.cos(p.aimAngle||0)*65, py+Math.sin(p.aimAngle||0)*65);
+              ctx.stroke(); ctx.setLineDash([]);
+            }
+
+            ctx.shadowColor=col; ctx.shadowBlur=isMe?22:14;
+            ctx.beginPath(); ctx.arc(px,py,30,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+            ctx.shadowBlur=0;
+            ctx.strokeStyle=isMe?'#fff':'rgba(255,255,255,0.7)'; ctx.lineWidth=isMe?4:2.5; ctx.stroke();
+
+            ctx.fillStyle='#fff'; ctx.font='17px Arial'; ctx.textAlign='center';
+            ctx.fillText(emoji,px,py+6);
+
+            // Emote bubble
+            const emoteEmoji = emotes[p.id];
+            if (emoteEmoji) {
+              ctx.font='30px Arial'; ctx.fillText(emoteEmoji, px, py-52);
+            }
+
+            // Name tag
+            ctx.font=`bold ${isMe?12:11}px Arial`; ctx.textAlign='center';
+            ctx.fillStyle=isMe?'#c4b5fd':'rgba(255,255,255,0.75)';
+            ctx.fillText(p.username, px, py-37);
+
+            // Health bar
+            ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(px-26,py-33,52,7);
+            ctx.fillStyle=p.health>50?'#10b981':p.health>25?'#fbbf24':'#ef4444';
+            ctx.fillRect(px-26,py-33,52*(p.health/100),7);
+          });
+
+          // Bullets
+          gs.bullets?.forEach(b => {
+            const col = WEAPON_COLORS[b.weapon]||'#a78bfa';
+            ctx.shadowColor=col; ctx.shadowBlur=10;
+            ctx.beginPath(); ctx.arc(b.x-camX,b.y-camY,5,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+            ctx.shadowBlur=0;
+          });
+
+          renderRef.current = requestAnimationFrame(render);
+        };
+
+        renderRef.current = requestAnimationFrame(render);
+        return () => cancelAnimationFrame(renderRef.current);
+      }, [phase, emotes]);
+
+      // ── Keyboard/Mouse ────────────────────────────────────────────────────
+      useEffect(() => {
+        const canvas = canvasRef.current;
+        const onKD = (e) => {
+          keysRef.current[e.key.toLowerCase()] = true;
+          if (e.key.toLowerCase()==='t') {
+            const EMOTES = ['👋','💃','😂','💪','🎮','🧠'];
+            const emoji  = EMOTES[Math.floor(Math.random()*EMOTES.length)];
+            socketRef.current?.emit('emote', { emoji });
+          }
+          // 1-4 weapon quick select
+          const wepKeys = { '1':0,'2':1,'3':2,'4':3 };
+          if (wepKeys[e.key] !== undefined && gameStateRef.current) {
+            const me = gameStateRef.current.players[myIdRef.current];
+            if (me && me.weapons[wepKeys[e.key]]) {
+              socketRef.current?.emit('switchWeapon', { weapon: me.weapons[wepKeys[e.key]] });
+            }
+          }
+        };
+        const onKU = (e) => { keysRef.current[e.key.toLowerCase()] = false; };
+        const onMM = (e) => {
+          if (!canvas) return;
+          const rect = canvas.getBoundingClientRect();
+          mouseRef.current.x = e.clientX - rect.left;
+          mouseRef.current.y = e.clientY - rect.top;
+          mouseRef.current.angle = Math.atan2(e.clientY - rect.top - canvas.height/2, e.clientX - rect.left - canvas.width/2);
+        };
+        const onMD = () => { mouseRef.current.down = true; };
+        const onMU = () => { mouseRef.current.down = false; };
+        const onWH = (e) => {
+          const me = gameStateRef.current?.players[myIdRef.current];
+          if (!me || me.weapons.length < 2) return;
+          const idx = me.weapons.indexOf(me.currentWeapon);
+          const next = me.weapons[(idx + (e.deltaY>0?1:-1) + me.weapons.length) % me.weapons.length];
+          socketRef.current?.emit('switchWeapon', { weapon: next });
+        };
+        const onBLD = (e) => {
+          if (e.key.toLowerCase()==='b') {
+            socketRef.current?.emit('build', { angle: mouseRef.current.angle });
+          }
+        };
+
+        window.addEventListener('keydown', onKD);
+        window.addEventListener('keydown', onBLD);
+        window.addEventListener('keyup', onKU);
+        canvas?.addEventListener('mousemove', onMM);
+        canvas?.addEventListener('mousedown', onMD);
+        canvas?.addEventListener('mouseup', onMU);
+        canvas?.addEventListener('wheel', onWH);
+        return () => {
+          window.removeEventListener('keydown', onKD);
+          window.removeEventListener('keydown', onBLD);
+          window.removeEventListener('keyup', onKU);
+          canvas?.removeEventListener('mousemove', onMM);
+          canvas?.removeEventListener('mousedown', onMD);
+          canvas?.removeEventListener('mouseup', onMU);
+          canvas?.removeEventListener('wheel', onWH);
+        };
+      }, [phase]);
+
+      const handleTriviaAnswer = (idx) => {
+        if (!triviaPopup) return;
+        socketRef.current?.emit('triviaAnswer', { stationId: triviaPopup.stationId, answerIndex: idx, question: triviaPopup.question });
+        setTriviaPopup(null);
+      };
+
+      const formatTime = (s) => `${Math.floor(s/60)}:${String(Math.round(s)%60).padStart(2,'0')}`;
+      const WEAPON_ICONS2 = { pistol:'🔫',shotgun:'💥',rifle:'🎯',sniper:'🔭',smg:'🌀',rocket:'🚀',laser:'🔆',grenade:'💣',crossbow:'🏹',minigun:'⚙️' };
+
+      // ── Screens ───────────────────────────────────────────────────────────
+      if (phase === 'connecting') return (
+        <div style={styles.gameWrapper}>
+          <div style={{ color:'#fff', textAlign:'center' }}>
+            <div style={{ fontSize:'3rem', animation:'spin 1s linear infinite', display:'inline-block', marginBottom:'16px' }}>🧠</div>
+            <div style={{ fontSize:'1.3rem', fontWeight:700 }}>Connecting to server...</div>
+            <div style={{ color:'#a5b4fc', marginTop:'8px', fontSize:'0.9rem' }}>{SERVER_URL}</div>
+          </div>
+        </div>
+      );
+
+      if (phase === 'error') return (
+        <div style={styles.gameWrapper}>
+          <div style={{ color:'#f87171', textAlign:'center', maxWidth:'400px', padding:'20px' }}>
+            <div style={{ fontSize:'3rem', marginBottom:'16px' }}>❌</div>
+            <div style={{ fontSize:'1.3rem', fontWeight:700, marginBottom:'8px' }}>Can't reach game server</div>
+            <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginBottom:'20px' }}>Make sure your server is running at:<br/><code style={{color:'#c4b5fd'}}>{SERVER_URL}</code></div>
+            <button onClick={() => window.location.reload()} style={{ padding:'12px 28px', background:'#8b5cf6', border:'none', borderRadius:'15px', color:'#fff', fontFamily:'inherit', fontWeight:700, cursor:'pointer', fontSize:'1rem' }}>Retry</button>
+          </div>
+        </div>
+      );
+
+      if (phase === 'waiting' || phase === 'countdown') return (
+        <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#1e1b4b,#312e81)', display:'flex', alignItems:'center', justifyContent:'center', position:'relative' }}>
+          <FloatingShapes colors={['#8b5cf6','#a78bfa','#c4b5fd']} />
+          <div style={{ position:'relative', zIndex:1, textAlign:'center', maxWidth:'500px', width:'90%' }}>
+            <div style={{ fontSize:'3rem', marginBottom:'12px', animation:'bounce 1.5s infinite' }}>🧠</div>
+            <h2 style={{ color:'#fff', fontSize:'1.8rem', fontWeight:800, marginBottom:'6px' }}>
+              {phase==='countdown' ? 'Get Ready!' : 'Waiting for Players'}
+            </h2>
+            <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginBottom:'30px' }}>Room: <span style={{ color:'#c4b5fd', fontWeight:700 }}>{roomId}</span></div>
+
+            {phase === 'countdown' && (
+              <div style={{ fontSize:'5rem', fontWeight:900, color:'#fbbf24', textShadow:'0 0 40px rgba(251,191,36,0.7)', marginBottom:'20px', animation:'bounce 1s infinite' }}>
+                {countdown}
+              </div>
+            )}
+
+            <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'20px', padding:'20px', marginBottom:'20px' }}>
+              <div style={{ color:'#a5b4fc', fontSize:'0.85rem', marginBottom:'12px' }}>Players in lobby ({waitingPlayers.length})</div>
+              <div style={{ display:'flex', flexWrap:'wrap', gap:'8px', justifyContent:'center' }}>
+                {waitingPlayers.map(p => (
+                  <div key={p.id} style={{ background: p.id===myIdRef.current?'rgba(139,92,246,0.3)':'rgba(255,255,255,0.08)', border:`1px solid ${p.id===myIdRef.current?'#8b5cf6':'rgba(255,255,255,0.1)'}`, borderRadius:'20px', padding:'6px 14px', color:'#fff', fontSize:'0.85rem', fontWeight: p.id===myIdRef.current?700:400 }}>
+                    {p.id===myIdRef.current?'👤 ':''}{ p.username}
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {phase==='waiting' && <div style={{ color:'rgba(255,255,255,0.4)', fontSize:'0.85rem' }}>Game starts when 2+ players join...</div>}
+          </div>
+        </div>
+      );
+
+      // ── Active game (& dead spectate) ─────────────────────────────────────
+      return (
+        <div style={styles.gameWrapper}>
+          <canvas ref={canvasRef} width={900} height={650} style={{ ...styles.gameCanvas, opacity: phase==='dead'?0.6:1, cursor:'crosshair' }} />
+
+          {/* Top HUD */}
+          <div style={styles.gameHudTop}>
+            <div style={styles.hudPill}><span style={styles.hudIcon}>👥</span><span style={styles.hudValue}>{hud.alive}</span><span style={styles.hudLabel}>alive</span></div>
+            <div style={styles.hudTimer}>
+              <span style={styles.timerIcon}>⏱️</span>
+              <span style={{ ...styles.timerValue, color:hud.timeLeft<=30?'#ef4444':hud.timeLeft<=60?'#fbbf24':'#fff' }}>{formatTime(hud.timeLeft)}</span>
+            </div>
+            <div style={styles.hudPill}><span style={styles.hudIcon}>💀</span><span style={styles.hudValue}>{hud.kills}</span><span style={styles.hudLabel}>kills</span></div>
+            <div style={{ ...styles.hudPill, fontSize:'0.75rem' }}><span style={{ color: pingMs<60?'#10b981':pingMs<120?'#fbbf24':'#ef4444' }}>●</span><span style={{ color:'#a5b4fc', marginLeft:'4px' }}>{pingMs}ms</span></div>
+          </div>
+
+          {/* Bottom HUD */}
+          <div style={styles.gameHudBottom}>
+            <div style={styles.healthShieldBox}>
+              <div style={styles.barRow}><span style={styles.barIcon}>💖</span><div style={styles.healthBarBg}><div style={{...styles.healthBarFill,width:`${hud.health}%`}}/></div><span style={styles.barNum}>{hud.health}</span></div>
+              <div style={styles.barRow}><span style={styles.barIcon}>🛡️</span><div style={styles.shieldBarBg}><div style={{...styles.shieldBarFill,width:`${hud.shield}%`}}/></div><span style={styles.barNum}>{hud.shield}</span></div>
+            </div>
+            <div style={styles.resourceBox}>
+              <div style={styles.resourceItem}><span>📦</span><span>{hud.ammo}</span></div>
+              <div style={styles.resourceItem}><span>🧱</span><span>{hud.materials}</span></div>
+            </div>
+            {/* Weapon slots */}
+            <div style={{ display:'flex', gap:'8px' }}>
+              {hud.weapons.map(w => (
+                <div key={w} style={{ ...styles.weaponBox, borderColor: w===hud.weapon?'#a78bfa':'rgba(255,255,255,0.2)', opacity:w===hud.weapon?1:0.5, transform:w===hud.weapon?'scale(1.05)':'scale(1)', transition:'all 0.15s' }}>
+                  <span style={styles.weaponIcon}>{WEAPON_ICONS2[w]||'🔫'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Dead overlay */}
+          {phase === 'dead' && deathInfo && (
+            <div style={{ position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', background:'rgba(0,0,0,0.85)', backdropFilter:'blur(10px)', borderRadius:'25px', padding:'35px 45px', textAlign:'center', border:'3px solid #ef4444', zIndex:200 }}>
+              <div style={{ fontSize:'3rem', marginBottom:'12px' }}>💀</div>
+              <h2 style={{ color:'#f87171', fontSize:'1.8rem', fontWeight:800, margin:'0 0 8px' }}>Eliminated!</h2>
+              <div style={{ color:'#a5b4fc', marginBottom:'6px' }}>Killed by <span style={{ color:'#fff', fontWeight:700 }}>{deathInfo.killedBy}</span></div>
+              <div style={{ color:'#a5b4fc', marginBottom:'20px' }}>#{deathInfo.placement} place · {deathInfo.kills} kills</div>
+              <div style={{ color:'rgba(255,255,255,0.4)', fontSize:'0.85rem' }}>Spectating until match ends...</div>
+            </div>
+          )}
+
+          {/* Notification */}
+          {notification && (
+            <div style={{ ...styles.gameNotification, borderColor:notification.color }}>
+              <span style={styles.notifIcon}>{notification.icon}</span>
+              <span style={{ color:notification.color }}>{notification.text}</span>
+            </div>
+          )}
+
+          {/* Trivia */}
+          {triviaPopup && (
+            <div style={styles.triviaOverlay}>
+              <div style={styles.triviaModal}>
+                <div style={styles.triviaHeader}><span style={styles.triviaBrain}>🧠</span><span>Brain Challenge!</span></div>
+                <div style={styles.triviaQuestion}>{triviaPopup.question.q}</div>
+                <div style={styles.triviaGrid}>
+                  {triviaPopup.question.a.map((ans,i) => (
+                    <button key={i} style={{ ...styles.triviaBtn, background:['linear-gradient(135deg,#ef4444,#dc2626)','linear-gradient(135deg,#3b82f6,#2563eb)','linear-gradient(135deg,#eab308,#ca8a04)','linear-gradient(135deg,#22c55e,#16a34a)'][i] }} onClick={()=>handleTriviaAnswer(i)}>
+                      {ans}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div style={styles.controlsHint}>WASD Move • Click Shoot • B Build • E Interact • T Emote • 1-4 Weapons</div>
+        </div>
+      );
+    }
+
+    function Results({ result, onPlayAgain, onMenu, testMode }) {
+      const isWin = result.placement === 1;
+      return (
+        <div style={styles.resultsWrapper}>
+          <FloatingShapes colors={isWin?['#fbbf24','#f59e0b','#fcd34d']:['#8b5cf6','#a78bfa','#c4b5fd']} />
+          {testMode && <div style={{ position:'absolute', top:'15px', left:'50%', transform:'translateX(-50%)', background:'rgba(239,68,68,0.3)', border:'2px solid #ef4444', borderRadius:'15px', padding:'8px 20px', color:'#f87171', fontSize:'0.85rem', fontWeight:700, zIndex:10 }}>🧪 Test Mode — coins/XP not saved</div>}
+          <div style={styles.resultsBox}>
+            {isWin ? (
+              <div style={styles.victoryHeader}><span style={styles.victoryEmoji}>🏆</span><h1 style={styles.victoryText}>VICTORY ROYALE!</h1><span style={styles.victoryEmoji}>🏆</span></div>
+            ) : (
+              <div style={styles.defeatHeader}><h1 style={styles.defeatText}>#{result.placement} Place</h1><p style={styles.defeatSub}>Better luck next time!</p></div>
+            )}
+            <div style={styles.resultsGrid}>
+              <div style={styles.resultCard}><span style={styles.resultEmoji}>💀</span><span style={styles.resultNum}>{result.kills}</span><span style={styles.resultLabel}>Eliminations</span></div>
+              <div style={styles.resultCard}><span style={styles.resultEmoji}>🪙</span><span style={styles.resultNum}>+{result.coinsEarned}</span><span style={styles.resultLabel}>Coins</span></div>
+              <div style={styles.resultCard}><span style={styles.resultEmoji}>⭐</span><span style={styles.resultNum}>+{result.xpEarned}</span><span style={styles.resultLabel}>XP</span></div>
+            </div>
+            <div style={styles.resultsActions}>
+              <button style={styles.playAgainBtn} onClick={onPlayAgain}><span>🎮</span> Play Again</button>
+              <button style={styles.backToMenuBtn} onClick={onMenu}>Back to Menu</button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============== STYLES ==============
+    const styles = {
+      app: { width:'100%', minHeight:'100vh', fontFamily:"'Nunito', sans-serif", overflow:'hidden' },
+      floatingContainer: { position:'absolute', top:0, left:0, right:0, bottom:0, overflow:'hidden', pointerEvents:'none' },
+      menuContainer: { minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 50%,#4c1d95 100%)', position:'relative', padding:'20px' },
+      menuContent: { position:'relative', zIndex:1, display:'flex', flexDirection:'column', alignItems:'center', gap:'25px', maxWidth:'600px', width:'100%' },
+      logoSection: { textAlign:'center' },
+      logoIcon: { fontSize:'4rem', display:'block', marginBottom:'10px', animation:'bounce 2s ease-in-out infinite' },
+      logoTitle: { fontSize:'clamp(2.5rem,8vw,4rem)', fontWeight:900, margin:0, letterSpacing:'-2px' },
+      logoBrain: { color:'#c4b5fd' },
+      logoStorm: { color:'#fbbf24', textShadow:'0 0 30px rgba(251,191,36,0.6)' },
+      logoRoyale: { fontSize:'clamp(1.5rem,5vw,2.5rem)', fontWeight:800, color:'#fff', letterSpacing:'0.4em', marginTop:'5px', textShadow:'0 0 20px rgba(255,255,255,0.3)' },
+      tagline: { color:'#a5b4fc', fontSize:'1.1rem', marginTop:'10px' },
+      playerCard: { display:'flex', alignItems:'center', gap:'15px', background:'rgba(255,255,255,0.1)', backdropFilter:'blur(10px)', padding:'15px 25px', borderRadius:'60px', border:'2px solid rgba(255,255,255,0.15)', width:'100%', maxWidth:'450px' },
+      playerAvatar: { width:'55px', height:'55px', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', border:'3px solid #fff', boxShadow:'0 5px 20px rgba(0,0,0,0.3)' },
+      avatarEmoji: { fontSize:'1.8rem' },
+      playerDetails: { flex:1 },
+      playerName: { color:'#fff', fontWeight:700, fontSize:'1.2rem' },
+      playerLevelBar: { display:'flex', alignItems:'center', gap:'10px', marginTop:'5px' },
+      levelBadge: { background:'linear-gradient(135deg,#fbbf24,#f59e0b)', color:'#1e1b4b', padding:'3px 10px', borderRadius:'20px', fontSize:'0.75rem', fontWeight:800 },
+      xpBar: { flex:1, height:'6px', background:'rgba(255,255,255,0.2)', borderRadius:'10px', overflow:'hidden' },
+      xpFill: { height:'100%', background:'linear-gradient(90deg,#a78bfa,#8b5cf6)', borderRadius:'10px', transition:'width 0.3s' },
+      coinDisplay: { display:'flex', alignItems:'center', gap:'8px' },
+      coinIcon: { fontSize:'1.8rem' },
+      coinAmount: { color:'#fbbf24', fontWeight:800, fontSize:'1.3rem' },
+      buttonGroup: { display:'flex', flexDirection:'column', gap:'15px', width:'100%', maxWidth:'350px' },
+      playButton: { display:'flex', alignItems:'center', justifyContent:'center', gap:'15px', padding:'22px 50px', fontSize:'1.8rem', fontWeight:800, fontFamily:'inherit', background:'linear-gradient(135deg,#8b5cf6,#7c3aed)', border:'none', borderRadius:'60px', color:'#fff', cursor:'pointer', transition:'all 0.2s cubic-bezier(0.34,1.56,0.64,1)' },
+      playButtonIcon: { fontSize:'1.5rem' },
+      playButtonText: {},
+      secondaryButtons: { display:'flex', gap:'12px' },
+      secondaryButton: { flex:1, display:'flex', alignItems:'center', justifyContent:'center', gap:'10px', padding:'16px 20px', fontSize:'1.1rem', fontWeight:700, fontFamily:'inherit', border:'none', borderRadius:'50px', color:'#fff', cursor:'pointer', transition:'all 0.2s cubic-bezier(0.34,1.56,0.64,1)' },
+      shopButton: { background:'linear-gradient(135deg,#ec4899,#db2777)', boxShadow:'0 8px 25px rgba(236,72,153,0.4)' },
+      settingsButton: { background:'linear-gradient(135deg,#06b6d4,#0891b2)', boxShadow:'0 8px 25px rgba(6,182,212,0.4)' },
+      btnIcon: { fontSize:'1.3rem' },
+      statsRow: { display:'flex', gap:'15px', marginTop:'10px' },
+      statBox: { display:'flex', flexDirection:'column', alignItems:'center', background:'rgba(255,255,255,0.08)', padding:'15px 25px', borderRadius:'20px', minWidth:'90px' },
+      statEmoji: { fontSize:'1.5rem', marginBottom:'5px' },
+      statNumber: { color:'#fff', fontSize:'1.5rem', fontWeight:800 },
+      statLabel: { color:'#a5b4fc', fontSize:'0.8rem', marginTop:'2px' },
+      lobbyContainer: { minHeight:'100vh', background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 100%)', position:'relative', padding:'30px' },
+      backBtn: { display:'flex', alignItems:'center', gap:'8px', padding:'12px 24px', fontSize:'1rem', fontWeight:600, fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'30px', color:'#fff', cursor:'pointer', position:'relative', zIndex:10, transition:'all 0.2s' },
+      lobbyContent: { maxWidth:'800px', margin:'0 auto', position:'relative', zIndex:1 },
+      lobbyTitle: { display:'flex', alignItems:'center', justifyContent:'center', gap:'15px', fontSize:'2.2rem', color:'#fff', marginBottom:'40px', marginTop:'20px' },
+      lobbyIcon: { fontSize:'2.5rem' },
+      modeGrid: { display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:'20px', marginBottom:'30px' },
+      modeCard: { display:'flex', flexDirection:'column', alignItems:'center', gap:'12px', padding:'30px 20px', background:'rgba(255,255,255,0.05)', border:'3px solid rgba(255,255,255,0.1)', borderRadius:'25px', cursor:'pointer', transition:'all 0.3s cubic-bezier(0.34,1.56,0.64,1)', position:'relative', fontFamily:'inherit', color:'#fff' },
+      modeCardActive: { background:'rgba(139,92,246,0.3)', borderColor:'#a78bfa', transform:'scale(1.05)', boxShadow:'0 15px 40px rgba(139,92,246,0.4)' },
+      modeIcon: { fontSize:'3rem' },
+      modeName: { fontSize:'1.3rem', fontWeight:700 },
+      modeDesc: { fontSize:'0.85rem', color:'#a5b4fc', textAlign:'center' },
+      modeCheck: { position:'absolute', top:'10px', right:'10px', background:'#8b5cf6', color:'#fff', width:'28px', height:'28px', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', fontWeight:'bold' },
+      settingsCard: { background:'rgba(255,255,255,0.05)', padding:'25px 30px', borderRadius:'25px', marginBottom:'30px' },
+      settingsTitle: { color:'#fff', fontSize:'1.2rem', marginBottom:'20px' },
+      timeOptions: { display:'flex', gap:'12px' },
+      timeOption: { flex:1, padding:'15px', fontSize:'1.1rem', fontWeight:600, fontFamily:'inherit', background:'rgba(255,255,255,0.08)', border:'2px solid rgba(255,255,255,0.15)', borderRadius:'15px', color:'#fff', cursor:'pointer', transition:'all 0.2s' },
+      timeOptionActive: { background:'linear-gradient(135deg,#8b5cf6,#7c3aed)', borderColor:'#a78bfa' },
+      startButton: { display:'flex', alignItems:'center', justifyContent:'center', gap:'15px', width:'100%', padding:'22px', fontSize:'1.5rem', fontWeight:800, fontFamily:'inherit', background:'linear-gradient(135deg,#10b981,#059669)', border:'none', borderRadius:'60px', color:'#fff', cursor:'pointer', boxShadow:'0 10px 40px rgba(16,185,129,0.4)', transition:'all 0.2s' },
+      startIcon: { fontSize:'1.8rem' },
+      searchingBox: { textAlign:'center', padding:'60px 20px' },
+      searchingAnimation: { position:'relative', width:'120px', height:'120px', margin:'0 auto 30px' },
+      searchRing: { position:'absolute', top:0, left:0, right:0, bottom:0, border:'4px solid transparent', borderTopColor:'#8b5cf6', borderRadius:'50%', animation:'spin 1s linear infinite' },
+      searchRing2: { position:'absolute', top:'10px', left:'10px', right:'10px', bottom:'10px', border:'4px solid transparent', borderTopColor:'#ec4899', borderRadius:'50%', animation:'spin 1.5s linear infinite reverse' },
+      searchEmoji: { position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', fontSize:'3rem' },
+      searchingTitle: { color:'#fff', fontSize:'1.8rem', marginBottom:'20px' },
+      playerCounter: { display:'flex', alignItems:'baseline', justifyContent:'center', gap:'5px', marginBottom:'20px' },
+      playerCount: { color:'#fbbf24', fontSize:'3rem', fontWeight:800 },
+      playerDivider: { color:'#a5b4fc', fontSize:'2rem' },
+      playerTotal: { color:'#a5b4fc', fontSize:'2rem', fontWeight:600 },
+      matchProgress: { width:'100%', maxWidth:'400px', height:'12px', background:'rgba(255,255,255,0.1)', borderRadius:'10px', margin:'0 auto 30px', overflow:'hidden' },
+      matchProgressFill: { height:'100%', background:'linear-gradient(90deg,#8b5cf6,#ec4899)', borderRadius:'10px', transition:'width 0.2s' },
+      cancelBtn: { padding:'15px 40px', fontSize:'1rem', fontWeight:600, fontFamily:'inherit', background:'rgba(239,68,68,0.2)', border:'2px solid #ef4444', borderRadius:'30px', color:'#fff', cursor:'pointer' },
+      shopContainer: { minHeight:'100vh', background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 100%)', position:'relative', padding:'20px' },
+      shopHeader: { display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'25px', position:'relative', zIndex:10 },
+      shopTitle: { display:'flex', alignItems:'center', gap:'12px', color:'#fff', fontSize:'1.8rem', margin:0 },
+      shopCoins: { display:'flex', alignItems:'center', gap:'10px', background:'rgba(255,255,255,0.1)', padding:'10px 20px', borderRadius:'30px', color:'#fbbf24', fontWeight:800, fontSize:'1.2rem' },
+      shopTabs: { display:'flex', gap:'12px', marginBottom:'25px', position:'relative', zIndex:1 },
+      shopTab: { display:'flex', alignItems:'center', gap:'10px', padding:'14px 28px', fontSize:'1.1rem', fontWeight:600, fontFamily:'inherit', background:'rgba(255,255,255,0.08)', border:'none', borderRadius:'20px', color:'#fff', cursor:'pointer', transition:'all 0.2s' },
+      shopTabActive: { background:'linear-gradient(135deg,#ec4899,#db2777)', boxShadow:'0 8px 25px rgba(236,72,153,0.4)' },
+      shopGrid: { display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))', gap:'20px', position:'relative', zIndex:1 },
+      shopItem: { background:'rgba(255,255,255,0.08)', borderRadius:'25px', padding:'20px', textAlign:'center', border:'3px solid transparent', transition:'all 0.3s cubic-bezier(0.34,1.56,0.64,1)' },
+      shopItemSelected: { borderColor:'#fbbf24' },
+      shopItemOwned: { borderColor:'rgba(16,185,129,0.5)' },
+      skinPreview: { width:'90px', height:'90px', borderRadius:'50%', margin:'0 auto 15px', display:'flex', alignItems:'center', justifyContent:'center', border:'4px solid #fff' },
+      skinEmoji: { fontSize:'2.5rem' },
+      emotePreview: { height:'90px', display:'flex', alignItems:'center', justifyContent:'center', marginBottom:'15px' },
+      emoteEmoji: { fontSize:'4rem' },
+      itemName: { color:'#fff', fontSize:'1.1rem', fontWeight:700, marginBottom:'12px' },
+      itemBtn: { width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', padding:'12px', fontSize:'1rem', fontWeight:700, fontFamily:'inherit', border:'none', borderRadius:'15px', cursor:'pointer', transition:'all 0.2s' },
+      itemBtnBuy: { background:'linear-gradient(135deg,#fbbf24,#f59e0b)', color:'#1e1b4b' },
+      itemBtnOwned: { background:'rgba(16,185,129,0.2)', color:'#10b981' },
+      itemBtnEquipped: { background:'linear-gradient(135deg,#10b981,#059669)', color:'#fff' },
+      itemBtnLocked: { background:'rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.4)', cursor:'not-allowed' },
+      settingsContainer: { minHeight:'100vh', background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 100%)', position:'relative', padding:'30px' },
+      settingsContent: { maxWidth:'600px', margin:'0 auto', position:'relative', zIndex:1 },
+      settingsTitle2: { display:'flex', alignItems:'center', justifyContent:'center', gap:'15px', color:'#fff', fontSize:'2rem', marginTop:'20px', marginBottom:'40px' },
+      settingsCard2: { background:'rgba(255,255,255,0.08)', borderRadius:'25px', padding:'25px', marginBottom:'20px' },
+      cardTitle: { display:'flex', alignItems:'center', gap:'10px', color:'#fff', fontSize:'1.3rem', marginBottom:'20px' },
+      inputGroup: {},
+      inputLabel: { color:'#a5b4fc', fontSize:'0.9rem', marginBottom:'8px', display:'block' },
+      inputRow: { display:'flex', gap:'12px' },
+      textInput: { flex:1, padding:'14px 20px', fontSize:'1.1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none', transition:'all 0.2s' },
+      saveBtn: { padding:'14px 28px', fontSize:'1rem', fontWeight:700, fontFamily:'inherit', border:'none', borderRadius:'15px', color:'#fff', cursor:'pointer', transition:'all 0.3s' },
+      controlsGrid: { display:'flex', flexDirection:'column', gap:'12px' },
+      controlRow: { display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 15px', background:'rgba(255,255,255,0.05)', borderRadius:'12px' },
+      controlAction: { display:'flex', alignItems:'center', gap:'10px', color:'#fff' },
+      controlKey: { background:'rgba(139,92,246,0.3)', color:'#c4b5fd', padding:'6px 14px', borderRadius:'8px', fontWeight:600, fontSize:'0.9rem' },
+      gameWrapper: { display:'flex', alignItems:'center', justifyContent:'center', minHeight:'100vh', background:'linear-gradient(135deg,#0f172a 0%,#1e1b4b 100%)', position:'relative', padding:'20px' },
+      gameCanvas: { borderRadius:'20px', border:'4px solid #8b5cf6', boxShadow:'0 0 50px rgba(139,92,246,0.4)', cursor:'crosshair' },
+      gameHudTop: { position:'absolute', top:'30px', left:'50%', transform:'translateX(-50%)', display:'flex', alignItems:'center', gap:'20px' },
+      hudPill: { display:'flex', alignItems:'center', gap:'8px', background:'rgba(0,0,0,0.6)', backdropFilter:'blur(10px)', padding:'12px 20px', borderRadius:'50px', color:'#fff' },
+      hudIcon: { fontSize:'1.3rem' },
+      hudValue: { fontSize:'1.4rem', fontWeight:800 },
+      hudLabel: { color:'#a5b4fc', fontSize:'0.9rem' },
+      hudTimer: { display:'flex', alignItems:'center', gap:'10px', background:'rgba(0,0,0,0.7)', backdropFilter:'blur(10px)', padding:'15px 30px', borderRadius:'50px' },
+      timerIcon: { fontSize:'1.5rem' },
+      timerValue: { fontSize:'2rem', fontWeight:800 },
+      gameHudBottom: { position:'absolute', bottom:'30px', left:'50%', transform:'translateX(-50%)', display:'flex', alignItems:'flex-end', gap:'15px' },
+      healthShieldBox: { display:'flex', flexDirection:'column', gap:'8px', background:'rgba(0,0,0,0.6)', backdropFilter:'blur(10px)', padding:'15px 20px', borderRadius:'20px' },
+      barRow: { display:'flex', alignItems:'center', gap:'10px' },
+      barIcon: { fontSize:'1.2rem' },
+      healthBarBg: { width:'130px', height:'14px', background:'rgba(255,255,255,0.15)', borderRadius:'10px', overflow:'hidden' },
+      healthBarFill: { height:'100%', background:'linear-gradient(90deg,#f472b6,#ec4899)', borderRadius:'10px', transition:'width 0.3s' },
+      shieldBarBg: { width:'130px', height:'14px', background:'rgba(255,255,255,0.15)', borderRadius:'10px', overflow:'hidden' },
+      shieldBarFill: { height:'100%', background:'linear-gradient(90deg,#60a5fa,#3b82f6)', borderRadius:'10px', transition:'width 0.3s' },
+      barNum: { color:'#fff', fontWeight:700, minWidth:'35px', textAlign:'right' },
+      resourceBox: { display:'flex', gap:'15px', background:'rgba(0,0,0,0.6)', backdropFilter:'blur(10px)', padding:'15px 20px', borderRadius:'20px' },
+      resourceItem: { display:'flex', alignItems:'center', gap:'8px', color:'#fff', fontWeight:700, fontSize:'1.1rem' },
+      weaponBox: { display:'flex', alignItems:'center', gap:'12px', background:'rgba(0,0,0,0.6)', backdropFilter:'blur(10px)', padding:'15px 25px', borderRadius:'20px', border:'3px solid' },
+      weaponIcon: { fontSize:'1.8rem' },
+      weaponName: { color:'#fff', fontWeight:700, fontSize:'1.1rem' },
+      gameNotification: { position:'absolute', top:'120px', left:'50%', transform:'translateX(-50%)', display:'flex', alignItems:'center', gap:'12px', background:'rgba(0,0,0,0.8)', backdropFilter:'blur(10px)', padding:'15px 30px', borderRadius:'50px', fontSize:'1.2rem', fontWeight:700, border:'3px solid', animation:'slideDown 0.3s ease-out' },
+      notifIcon: { fontSize:'1.5rem' },
+      controlsHint: { position:'absolute', bottom:'8px', left:'50%', transform:'translateX(-50%)', color:'rgba(255,255,255,0.4)', fontSize:'0.85rem' },
+      triviaOverlay: { position:'absolute', top:0, left:0, right:0, bottom:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:100 },
+      triviaModal: { background:'linear-gradient(135deg,#1e1b4b,#312e81)', padding:'40px', borderRadius:'30px', maxWidth:'500px', width:'90%', textAlign:'center', border:'4px solid #ec4899', boxShadow:'0 0 60px rgba(236,72,153,0.5)' },
+      triviaHeader: { display:'flex', alignItems:'center', justifyContent:'center', gap:'12px', color:'#fff', fontSize:'1.6rem', fontWeight:800, marginBottom:'25px' },
+      triviaBrain: { fontSize:'2rem', animation:'bounce 1s infinite' },
+      triviaQuestion: { color:'#fff', fontSize:'1.4rem', lineHeight:1.5, marginBottom:'30px' },
+      triviaGrid: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:'15px' },
+      triviaBtn: { padding:'18px 15px', fontSize:'1.1rem', fontWeight:700, fontFamily:'inherit', border:'none', borderRadius:'15px', color:'#fff', cursor:'pointer', transition:'all 0.2s', boxShadow:'0 5px 15px rgba(0,0,0,0.3)' },
+      resultsWrapper: { minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', background:'linear-gradient(135deg,#1e1b4b 0%,#312e81 100%)', position:'relative', padding:'20px' },
+      resultsBox: { position:'relative', zIndex:1, textAlign:'center', maxWidth:'600px', width:'100%' },
+      victoryHeader: { display:'flex', alignItems:'center', justifyContent:'center', gap:'20px', marginBottom:'40px' },
+      victoryEmoji: { fontSize:'4rem', animation:'bounce 1s infinite' },
+      victoryText: { color:'#fbbf24', fontSize:'clamp(2rem,6vw,3rem)', fontWeight:900, textShadow:'0 0 40px rgba(251,191,36,0.6)' },
+      defeatHeader: { marginBottom:'40px' },
+      defeatText: { color:'#fff', fontSize:'clamp(2rem,6vw,3rem)', fontWeight:900, margin:0 },
+      defeatSub: { color:'#a5b4fc', fontSize:'1.2rem', marginTop:'10px' },
+      resultsGrid: { display:'flex', gap:'20px', justifyContent:'center', marginBottom:'40px', flexWrap:'wrap' },
+      resultCard: { display:'flex', flexDirection:'column', alignItems:'center', background:'rgba(255,255,255,0.08)', padding:'25px 35px', borderRadius:'25px' },
+      resultEmoji: { fontSize:'2.5rem', marginBottom:'10px' },
+      resultNum: { color:'#fff', fontSize:'2rem', fontWeight:800 },
+      resultLabel: { color:'#a5b4fc', fontSize:'0.95rem', marginTop:'5px' },
+      resultsActions: { display:'flex', flexDirection:'column', gap:'15px', alignItems:'center' },
+      playAgainBtn: { display:'flex', alignItems:'center', gap:'12px', padding:'20px 50px', fontSize:'1.4rem', fontWeight:800, fontFamily:'inherit', background:'linear-gradient(135deg,#10b981,#059669)', border:'none', borderRadius:'50px', color:'#fff', cursor:'pointer', boxShadow:'0 10px 40px rgba(16,185,129,0.4)', transition:'all 0.2s' },
+      backToMenuBtn: { padding:'15px 40px', fontSize:'1rem', fontWeight:600, fontFamily:'inherit', background:'transparent', border:'2px solid rgba(255,255,255,0.3)', borderRadius:'40px', color:'#fff', cursor:'pointer', transition:'all 0.2s' },
+    };
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<BrainStormRoyale />);
+  </script>
+</body>
+</html>
