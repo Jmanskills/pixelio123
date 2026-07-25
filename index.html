@@ -10,7 +10,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
-  <script>window.SOCKET_SERVER_URL = window.SOCKET_SERVER_URL || 'http://localhost:3001';</script>
+  <script>window.SOCKET_SERVER_URL = window.SOCKET_SERVER_URL || 'https://pixelio123-production.up.railway.app/';</script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Nunito', sans-serif; overflow: hidden; }
@@ -339,6 +339,25 @@
       const [giveTarget, setGiveTarget] = useState('');
       const [giveCoins, setGiveCoins] = useState(500);
       const [spawnMsg, setSpawnMsg] = useState('');
+      const [deleteConfirm, setDeleteConfirm] = useState(null); // username to confirm delete
+      const [deleteMsg, setDeleteMsg] = useState('');
+      const [accountSearch, setAccountSearch] = useState('');
+
+      const deleteAccount = (username) => {
+        if (isPermanentAdmin(username)) return setDeleteMsg(`Can't delete a permanent admin account.`);
+        if (username === playerData.username) return setDeleteMsg(`Can't delete your own account while logged in.`);
+        const accounts = getAccounts();
+        if (!accounts[username.toLowerCase()]) return setDeleteMsg(`Account "${username}" not found.`);
+        delete accounts[username.toLowerCase()];
+        saveAccounts(accounts);
+        // Also wipe their save data
+        try {
+          const saved = loadGame();
+          if (saved && saved.username === username) localStorage.removeItem(SAVE_KEY);
+        } catch(e) {}
+        setDeleteConfirm(null);
+        setDeleteMsg(`✅ Account "${username}" deleted.`);
+      };
 
       const admins = getAdmins();
       const owner = isOwner(playerData.username);
@@ -387,9 +406,9 @@
             </div>
 
             <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'20px' }}>
-              {['tools','skins','admins','info'].map(t => (
-                <button key={t} style={tabStyle(t)} onClick={() => setTab(t)}>
-                  {t==='tools'?'🛠️ Tools':t==='skins'?'🎨 Give Skins':t==='admins'?'👥 Admins':'ℹ️ Info'}
+              {['tools','skins','admins','accounts','info'].map(t => (
+                <button key={t} style={tabStyle(t)} onClick={() => { setTab(t); setDeleteMsg(''); setDeleteConfirm(null); }}>
+                  {t==='tools'?'🛠️ Tools':t==='skins'?'🎨 Give Skins':t==='admins'?'👥 Admins':t==='accounts'?'🗑️ Accounts':'ℹ️ Info'}
                 </button>
               ))}
             </div>
@@ -507,6 +526,92 @@
 
             {tab === 'admins' && !owner && (
               <div style={{ color:'#a5b4fc', textAlign:'center', padding:'20px' }}>Only the owner (jmanskills) can manage admins.</div>
+            )}
+
+            {tab === 'accounts' && owner && (() => {
+              const allAccounts = getAccounts();
+              const filtered = Object.keys(allAccounts).filter(key =>
+                !accountSearch || key.includes(accountSearch.toLowerCase())
+              );
+              return (
+                <div>
+                  <div style={{ color:'#fbbf24', fontSize:'0.85rem', marginBottom:'15px' }}>Owner-only: view and delete player accounts.</div>
+
+                  {/* Search */}
+                  <input
+                    value={accountSearch}
+                    onChange={e => setAccountSearch(e.target.value)}
+                    placeholder="Search username..."
+                    style={{ width:'100%', padding:'12px 16px', fontSize:'0.95rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'12px', color:'#fff', outline:'none', marginBottom:'12px' }}
+                  />
+
+                  {deleteMsg && (
+                    <div style={{ color: deleteMsg.startsWith('✅') ? '#34d399' : '#f87171', fontSize:'0.85rem', marginBottom:'10px', padding:'10px 14px', background:'rgba(255,255,255,0.06)', borderRadius:'10px' }}>
+                      {deleteMsg}
+                    </div>
+                  )}
+
+                  {filtered.length === 0 && (
+                    <div style={{ color:'#a5b4fc', textAlign:'center', padding:'20px', fontSize:'0.9rem' }}>
+                      {Object.keys(allAccounts).length === 0 ? 'No accounts registered yet.' : 'No accounts match that search.'}
+                    </div>
+                  )}
+
+                  <div style={{ display:'flex', flexDirection:'column', gap:'8px', maxHeight:'340px', overflowY:'auto' }}>
+                    {filtered.map(key => {
+                      const acc = allAccounts[key];
+                      const isConfirming = deleteConfirm === acc.username;
+                      const isSelf = acc.username === playerData.username;
+                      const isPerm = isPermanentAdmin(acc.username);
+                      return (
+                        <div key={key} style={{ background: isConfirming ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)', border: isConfirming ? '2px solid #ef4444' : '2px solid transparent', borderRadius:'12px', padding:'12px 16px', transition:'all 0.2s' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                            <div>
+                              <span style={{ color:'#fff', fontWeight:700, fontSize:'0.95rem' }}>
+                                {isOwner(acc.username) ? '👑 ' : isPerm ? '⭐ ' : isSelf ? '👤 ' : ''}
+                                {acc.username}
+                              </span>
+                              {isSelf && <span style={{ color:'#a5b4fc', fontSize:'0.75rem', marginLeft:'8px' }}>(you)</span>}
+                              {isPerm && <span style={{ color:'#fbbf24', fontSize:'0.75rem', marginLeft:'8px' }}>(permanent admin)</span>}
+                            </div>
+                            {!isSelf && !isPerm ? (
+                              isConfirming ? (
+                                <div style={{ display:'flex', gap:'8px' }}>
+                                  <button onClick={() => deleteAccount(acc.username)} style={{ background:'linear-gradient(135deg,#ef4444,#dc2626)', border:'none', borderRadius:'10px', color:'#fff', padding:'7px 16px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem', fontWeight:800 }}>
+                                    ✓ Confirm Delete
+                                  </button>
+                                  <button onClick={() => setDeleteConfirm(null)} style={{ background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'10px', color:'#fff', padding:'7px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem' }}>
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <button onClick={() => { setDeleteConfirm(acc.username); setDeleteMsg(''); }} style={{ background:'rgba(239,68,68,0.15)', border:'2px solid rgba(239,68,68,0.4)', borderRadius:'10px', color:'#f87171', padding:'7px 16px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem', fontWeight:700 }}>
+                                  🗑️ Delete
+                                </button>
+                              )
+                            ) : (
+                              <span style={{ color:'rgba(255,255,255,0.25)', fontSize:'0.8rem' }}>protected</span>
+                            )}
+                          </div>
+                          {isConfirming && (
+                            <div style={{ color:'#fca5a5', fontSize:'0.8rem', marginTop:'8px' }}>
+                              ⚠️ This will permanently delete "{acc.username}" and all their save data.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div style={{ color:'rgba(255,255,255,0.3)', fontSize:'0.78rem', marginTop:'12px', textAlign:'center' }}>
+                    {Object.keys(allAccounts).length} registered account{Object.keys(allAccounts).length !== 1 ? 's' : ''}
+                  </div>
+                </div>
+              );
+            })()}
+
+            {tab === 'accounts' && !owner && (
+              <div style={{ color:'#a5b4fc', textAlign:'center', padding:'20px' }}>Only the owner (jmanskills) can manage accounts.</div>
             )}
 
             {tab === 'info' && (
