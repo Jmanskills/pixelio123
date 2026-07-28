@@ -91,9 +91,9 @@ app.use(express.json());
 // Trust Railway's proxy
 app.set('trust proxy', 1);
 
-// Serve the game HTML from same folder
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+// Serve the game HTML from root folder
+app.use(express.static(path.join(__dirname)));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 
 // Health check for Railway/Render
 app.get('/health', (req, res) => res.json({ status:'ok', rooms: rooms.size, players: totalConnected() }));

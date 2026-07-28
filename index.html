@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>BrainStorm Royale</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
+  <title>Pixel Zone</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎮</text></svg>">
   <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: 'Nunito', sans-serif; overflow: hidden; }
@@ -116,31 +116,57 @@
       { id: 'brain', name: 'Big Brain',emoji: '🧠', price: 500, owned: false },
     ];
 
-    // ============== SAVE SYSTEM ==============
-    const SAVE_KEY = 'bsr_save_v1';
-    const AUTH_KEY = 'bsr_auth_v1';
-    const ADMINS_KEY = 'bsr_admins_v1';
+    // ============== SAVE SYSTEM (Supabase) ==============
+    const AUTH_KEY   = 'pz_auth_v1';
+    const ADMINS_KEY = 'pz_admins_v1';
 
-    function saveGame(data) {
-      try { localStorage.setItem(SAVE_KEY, JSON.stringify({ ...data, lastSaved: new Date().toISOString() })); } catch(e) {}
+    // Simple hash (not cryptographic — just obfuscation for game passwords)
+    async function hashPassword(password) {
+      const encoder = new TextEncoder();
+      const data = encoder.encode(password + 'pixelzone_salt_2024');
+      const hash = await crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
     }
 
-    function loadGame() {
-      try {
-        const raw = localStorage.getItem(SAVE_KEY);
-        return raw ? JSON.parse(raw) : null;
-      } catch(e) { return null; }
+    async function saveGame(data) {
+      // Always cache locally for speed
+      try { localStorage.setItem('pz_save_' + data.username, JSON.stringify({ ...data, lastSaved: new Date().toISOString() })); } catch(e) {}
+      // Sync to Supabase
+      if (!data.username.startsWith('Guest')) {
+        await supa.from('accounts').update({
+          coins:         data.coins,
+          xp:            data.xp,
+          level:         data.level,
+          skins:         data.skins,
+          emotes:        data.emotes,
+          selected_skin: data.selectedSkin,
+          selected_emote:data.selectedEmote,
+          stats:         data.stats,
+          last_login:    new Date().toISOString(),
+        }).eq('username', data.username);
+      }
+    }
+
+    function loadAuth() {
+      try { const r = localStorage.getItem(AUTH_KEY); return r ? JSON.parse(r) : null; } catch(e) { return null; }
     }
 
     function saveAuth(auth) {
       try { localStorage.setItem(AUTH_KEY, JSON.stringify(auth)); } catch(e) {}
     }
 
-    function loadAuth() {
-      try {
-        const raw = localStorage.getItem(AUTH_KEY);
-        return raw ? JSON.parse(raw) : null;
-      } catch(e) { return null; }
+    function rowToPlayerData(row) {
+      return {
+        username:      row.username,
+        coins:         row.coins      ?? 1000,
+        xp:            row.xp         ?? 0,
+        level:         row.level      ?? 1,
+        skins:         row.skins      ?? ['default'],
+        emotes:        row.emotes     ?? ['wave'],
+        selectedSkin:  row.selected_skin  || 'default',
+        selectedEmote: row.selected_emote || 'wave',
+        stats:         row.stats      ?? { wins:0, kills:0, gamesPlayed:0 },
+      };
     }
 
     const PERMANENT_ADMINS = [OWNER_USERNAME, 'zen'];
@@ -149,9 +175,7 @@
       try {
         const raw = localStorage.getItem(ADMINS_KEY);
         const stored = raw ? JSON.parse(raw) : [];
-        // merge permanent admins so they're always in the list
-        const merged = [...new Set([...PERMANENT_ADMINS, ...stored])];
-        return merged;
+        return [...new Set([...PERMANENT_ADMINS, ...stored])];
       } catch(e) { return PERMANENT_ADMINS; }
     }
 
@@ -159,15 +183,14 @@
       try { localStorage.setItem(ADMINS_KEY, JSON.stringify(list)); } catch(e) {}
     }
 
-    function getAccounts() {
-      try {
-        const raw = localStorage.getItem('bsr_accounts_v1');
-        return raw ? JSON.parse(raw) : {};
-      } catch(e) { return {}; }
+    // Supabase account helpers
+    async function getAccounts() {
+      const { data } = await supa.from('accounts').select('username, coins, xp, level, skins, selected_skin, stats').order('username');
+      return data || [];
     }
 
-    function saveAccounts(accs) {
-      try { localStorage.setItem('bsr_accounts_v1', JSON.stringify(accs)); } catch(e) {}
+    async function deleteAccount(username) {
+      await supa.from('accounts').delete().eq('username', username);
     }
 
     function isOwner(username) { return username === OWNER_USERNAME; }
@@ -215,43 +238,58 @@
 
     // ============== AUTH SCREEN ==============
     function AuthScreen({ onLogin }) {
-      const [mode, setMode] = useState('login'); // 'login' | 'signup' | 'guest'
+      const [mode, setMode]       = useState('login');
       const [username, setUsername] = useState('');
       const [password, setPassword] = useState('');
-      const [confirm, setConfirm] = useState('');
-      const [error, setError] = useState('');
-      const [success, setSuccess] = useState('');
+      const [confirm, setConfirm]   = useState('');
+      const [error, setError]       = useState('');
+      const [success, setSuccess]   = useState('');
+      const [loading, setLoading]   = useState(false);
 
-      const handleLogin = () => {
-        setError('');
-        if (!username.trim() || !password) return setError('Please fill in all fields.');
-        const accounts = getAccounts();
-        const acc = accounts[username.toLowerCase()];
-        if (!acc) return setError('Account not found. Sign up first!');
-        if (acc.password !== password) return setError('Wrong password.');
-        saveAuth({ username: acc.username });
-        const saved = loadGame();
-        const playerData = (saved && saved.username === acc.username) ? saved : makeDefaultPlayer(acc.username);
-        onLogin(playerData);
+      const handleLogin = async () => {
+        setError(''); setLoading(true);
+        if (!username.trim() || !password) { setLoading(false); return setError('Please fill in all fields.'); }
+        try {
+          const hash = await hashPassword(password);
+          const { data: acc } = await supa.from('accounts').select('*').eq('username', username.trim()).single();
+          if (!acc) { setLoading(false); return setError('Account not found. Sign up first!'); }
+          if (acc.password_hash !== hash) { setLoading(false); return setError('Wrong password.'); }
+          // Update last login
+          await supa.from('accounts').update({ last_login: new Date().toISOString() }).eq('username', acc.username);
+          saveAuth({ username: acc.username });
+          onLogin(rowToPlayerData(acc));
+        } catch(e) {
+          setLoading(false); setError('Connection error. Try again.');
+        }
       };
 
-      const handleSignup = () => {
-        setError('');
-        if (!username.trim() || !password || !confirm) return setError('Please fill in all fields.');
-        if (username.trim().length < 3) return setError('Username must be at least 3 characters.');
-        if (password.length < 6) return setError('Password must be at least 6 characters.');
-        if (password !== confirm) return setError('Passwords do not match.');
-        const accounts = getAccounts();
-        if (accounts[username.toLowerCase()]) return setError('Username already taken!');
-        accounts[username.toLowerCase()] = { username: username.trim(), password };
-        saveAccounts(accounts);
-        setSuccess('Account created! Logging in...');
-        setTimeout(() => {
+      const handleSignup = async () => {
+        setError(''); setLoading(true);
+        if (!username.trim() || !password || !confirm) { setLoading(false); return setError('Please fill in all fields.'); }
+        if (username.trim().length < 3) { setLoading(false); return setError('Username must be at least 3 characters.'); }
+        if (password.length < 6) { setLoading(false); return setError('Password must be at least 6 characters.'); }
+        if (password !== confirm) { setLoading(false); return setError('Passwords do not match.'); }
+        try {
+          // Check if username taken
+          const { data: existing } = await supa.from('accounts').select('username').eq('username', username.trim()).single();
+          if (existing) { setLoading(false); return setError('Username already taken!'); }
+          const hash = await hashPassword(password);
+          const newAcc = {
+            username:      username.trim(),
+            password_hash: hash,
+            coins: 1000, xp: 0, level: 1,
+            skins: ['default'], emotes: ['wave'],
+            selected_skin: 'default', selected_emote: 'wave',
+            stats: { wins:0, kills:0, gamesPlayed:0 },
+          };
+          const { error: insertErr } = await supa.from('accounts').insert(newAcc);
+          if (insertErr) { setLoading(false); return setError('Could not create account. Try again.'); }
+          setSuccess('Account created! Logging in...');
           saveAuth({ username: username.trim() });
-          const playerData = makeDefaultPlayer(username.trim());
-          saveGame(playerData);
-          onLogin(playerData);
-        }, 800);
+          setTimeout(() => onLogin(makeDefaultPlayer(username.trim())), 800);
+        } catch(e) {
+          setLoading(false); setError('Connection error. Try again.');
+        }
       };
 
       const handleGuest = () => {
@@ -264,11 +302,11 @@
           <FloatingShapes />
           <div style={{ position:'relative', zIndex:1, background:'rgba(255,255,255,0.08)', backdropFilter:'blur(20px)', borderRadius:'30px', padding:'40px', maxWidth:'420px', width:'100%', border:'2px solid rgba(255,255,255,0.15)' }}>
             <div style={{ textAlign:'center', marginBottom:'30px' }}>
-              <div style={{ fontSize:'3rem', marginBottom:'8px', animation:'bounce 2s infinite' }}>🧠⚡</div>
+              <div style={{ fontSize:'3rem', marginBottom:'8px', animation:'bounce 2s infinite' }}>🎮⚡</div>
               <h1 style={{ fontSize:'2rem', fontWeight:900, color:'#fff', margin:0 }}>
-                <span style={{ color:'#c4b5fd' }}>Brain</span><span style={{ color:'#fbbf24' }}>Storm</span>
+                <span style={{ color:'#c4b5fd' }}>Pixel</span><span style={{ color:'#fbbf24' }}>Zone</span>
               </h1>
-              <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginTop:'4px' }}>Answer. Build. Survive. Win!</div>
+              <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginTop:'4px' }}>Drop in. Build. Fight. Win!</div>
             </div>
 
             <div style={{ display:'flex', gap:'8px', marginBottom:'25px' }}>
@@ -285,45 +323,40 @@
             </div>
 
             <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-              <input
-                type="text" placeholder="Username" value={username}
+              <input type="text" placeholder="Username" value={username}
                 onChange={e => setUsername(e.target.value)}
                 style={{ padding:'14px 18px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none' }}
               />
-              <input
-                type="password" placeholder="Password" value={password}
+              <input type="password" placeholder="Password" value={password}
                 onChange={e => setPassword(e.target.value)}
-                onKeyDown={e => e.key==='Enter' && (mode==='login' ? handleLogin() : null)}
+                onKeyDown={e => e.key==='Enter' && !loading && (mode==='login' ? handleLogin() : handleSignup())}
                 style={{ padding:'14px 18px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none' }}
               />
               {mode === 'signup' && (
-                <input
-                  type="password" placeholder="Confirm Password" value={confirm}
+                <input type="password" placeholder="Confirm Password" value={confirm}
                   onChange={e => setConfirm(e.target.value)}
                   style={{ padding:'14px 18px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px', color:'#fff', outline:'none' }}
                 />
               )}
             </div>
 
-            {error && <div style={{ color:'#f87171', fontSize:'0.9rem', marginTop:'10px', textAlign:'center' }}>{error}</div>}
+            {error   && <div style={{ color:'#f87171', fontSize:'0.9rem', marginTop:'10px', textAlign:'center' }}>{error}</div>}
             {success && <div style={{ color:'#34d399', fontSize:'0.9rem', marginTop:'10px', textAlign:'center' }}>{success}</div>}
 
-            <button onClick={mode==='login' ? handleLogin : handleSignup} style={{
+            <button onClick={mode==='login' ? handleLogin : handleSignup} disabled={loading} style={{
               width:'100%', marginTop:'20px', padding:'16px', fontSize:'1.1rem', fontWeight:800,
-              fontFamily:'inherit', background:'linear-gradient(135deg,#8b5cf6,#7c3aed)', border:'none',
-              borderRadius:'20px', color:'#fff', cursor:'pointer', boxShadow:'0 8px 25px rgba(139,92,246,0.4)'
+              fontFamily:'inherit', background: loading ? 'rgba(139,92,246,0.5)' : 'linear-gradient(135deg,#8b5cf6,#7c3aed)',
+              border:'none', borderRadius:'20px', color:'#fff', cursor: loading ? 'not-allowed' : 'pointer',
+              boxShadow:'0 8px 25px rgba(139,92,246,0.4)'
             }}>
-              {mode==='login' ? '🚀 Login' : '🎉 Create Account'}
+              {loading ? '⏳ Please wait...' : mode==='login' ? '🚀 Login' : '🎉 Create Account'}
             </button>
 
             <div style={{ textAlign:'center', marginTop:'15px' }}>
               <button onClick={handleGuest} style={{
                 background:'none', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'15px',
-                color:'rgba(255,255,255,0.6)', padding:'10px 25px', fontSize:'0.9rem', cursor:'pointer',
-                fontFamily:'inherit'
-              }}>
-                👤 Play as Guest (no save)
-              </button>
+                color:'rgba(255,255,255,0.6)', padding:'10px 25px', fontSize:'0.9rem', cursor:'pointer', fontFamily:'inherit'
+              }}>👤 Play as Guest (no save)</button>
             </div>
           </div>
         </div>
@@ -342,21 +375,7 @@
       const [deleteMsg, setDeleteMsg] = useState('');
       const [accountSearch, setAccountSearch] = useState('');
 
-      const deleteAccount = (username) => {
-        if (isPermanentAdmin(username)) return setDeleteMsg(`Can't delete a permanent admin account.`);
-        if (username === playerData.username) return setDeleteMsg(`Can't delete your own account while logged in.`);
-        const accounts = getAccounts();
-        if (!accounts[username.toLowerCase()]) return setDeleteMsg(`Account "${username}" not found.`);
-        delete accounts[username.toLowerCase()];
-        saveAccounts(accounts);
-        // Also wipe their save data
-        try {
-          const saved = loadGame();
-          if (saved && saved.username === username) localStorage.removeItem(SAVE_KEY);
-        } catch(e) {}
-        setDeleteConfirm(null);
-        setDeleteMsg(`✅ Account "${username}" deleted.`);
-      };
+      const deleteMsg_placeholder = null; // deleteAccount is now global async fn
 
       const admins = getAdmins();
       const owner = isOwner(playerData.username);
@@ -528,56 +547,58 @@
             )}
 
             {tab === 'accounts' && owner && (() => {
-              const allAccounts = getAccounts();
-              const filtered = Object.keys(allAccounts).filter(key =>
-                !accountSearch || key.includes(accountSearch.toLowerCase())
+              const [allAccounts, setAllAccounts] = React.useState([]);
+              const [loadingAccs, setLoadingAccs] = React.useState(true);
+              React.useEffect(() => {
+                getAccounts().then(data => { setAllAccounts(data); setLoadingAccs(false); });
+              }, [deleteMsg]);
+              const filtered = allAccounts.filter(acc =>
+                !accountSearch || acc.username.toLowerCase().includes(accountSearch.toLowerCase())
               );
               return (
                 <div>
                   <div style={{ color:'#fbbf24', fontSize:'0.85rem', marginBottom:'15px' }}>Owner-only: view and delete player accounts.</div>
-
-                  {/* Search */}
-                  <input
-                    value={accountSearch}
-                    onChange={e => setAccountSearch(e.target.value)}
-                    placeholder="Search username..."
+                  <input value={accountSearch} onChange={e => setAccountSearch(e.target.value)} placeholder="Search username..."
                     style={{ width:'100%', padding:'12px 16px', fontSize:'0.95rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'12px', color:'#fff', outline:'none', marginBottom:'12px' }}
                   />
-
                   {deleteMsg && (
                     <div style={{ color: deleteMsg.startsWith('✅') ? '#34d399' : '#f87171', fontSize:'0.85rem', marginBottom:'10px', padding:'10px 14px', background:'rgba(255,255,255,0.06)', borderRadius:'10px' }}>
                       {deleteMsg}
                     </div>
                   )}
-
-                  {filtered.length === 0 && (
+                  {loadingAccs && <div style={{ color:'#a5b4fc', textAlign:'center', padding:'20px' }}>Loading accounts...</div>}
+                  {!loadingAccs && filtered.length === 0 && (
                     <div style={{ color:'#a5b4fc', textAlign:'center', padding:'20px', fontSize:'0.9rem' }}>
-                      {Object.keys(allAccounts).length === 0 ? 'No accounts registered yet.' : 'No accounts match that search.'}
+                      {allAccounts.length === 0 ? 'No accounts registered yet.' : 'No accounts match that search.'}
                     </div>
                   )}
-
                   <div style={{ display:'flex', flexDirection:'column', gap:'8px', maxHeight:'340px', overflowY:'auto' }}>
-                    {filtered.map(key => {
-                      const acc = allAccounts[key];
+                    {filtered.map(acc => {
                       const isConfirming = deleteConfirm === acc.username;
                       const isSelf = acc.username === playerData.username;
                       const isPerm = isPermanentAdmin(acc.username);
                       return (
-                        <div key={key} style={{ background: isConfirming ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)', border: isConfirming ? '2px solid #ef4444' : '2px solid transparent', borderRadius:'12px', padding:'12px 16px', transition:'all 0.2s' }}>
+                        <div key={acc.username} style={{ background: isConfirming ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.06)', border: isConfirming ? '2px solid #ef4444' : '2px solid transparent', borderRadius:'12px', padding:'12px 16px', transition:'all 0.2s' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
                             <div>
                               <span style={{ color:'#fff', fontWeight:700, fontSize:'0.95rem' }}>
-                                {isOwner(acc.username) ? '👑 ' : isPerm ? '⭐ ' : isSelf ? '👤 ' : ''}
-                                {acc.username}
+                                {isOwner(acc.username)?'👑 ':isPerm?'⭐ ':isSelf?'👤 ':''}{acc.username}
                               </span>
                               {isSelf && <span style={{ color:'#a5b4fc', fontSize:'0.75rem', marginLeft:'8px' }}>(you)</span>}
                               {isPerm && <span style={{ color:'#fbbf24', fontSize:'0.75rem', marginLeft:'8px' }}>(permanent admin)</span>}
+                              <div style={{ color:'#a5b4fc', fontSize:'0.75rem', marginTop:'2px' }}>
+                                🪙 {acc.coins} · Lv{acc.level} · {acc.stats?.wins||0}W {acc.stats?.kills||0}K
+                              </div>
                             </div>
                             {!isSelf && !isPerm ? (
                               isConfirming ? (
                                 <div style={{ display:'flex', gap:'8px' }}>
-                                  <button onClick={() => deleteAccount(acc.username)} style={{ background:'linear-gradient(135deg,#ef4444,#dc2626)', border:'none', borderRadius:'10px', color:'#fff', padding:'7px 16px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem', fontWeight:800 }}>
-                                    ✓ Confirm Delete
+                                  <button onClick={async () => {
+                                    await deleteAccount(acc.username);
+                                    setDeleteConfirm(null);
+                                    setDeleteMsg(`✅ "${acc.username}" deleted.`);
+                                  }} style={{ background:'linear-gradient(135deg,#ef4444,#dc2626)', border:'none', borderRadius:'10px', color:'#fff', padding:'7px 16px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem', fontWeight:800 }}>
+                                    ✓ Confirm
                                   </button>
                                   <button onClick={() => setDeleteConfirm(null)} style={{ background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'10px', color:'#fff', padding:'7px 14px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem' }}>
                                     Cancel
@@ -592,18 +613,13 @@
                               <span style={{ color:'rgba(255,255,255,0.25)', fontSize:'0.8rem' }}>protected</span>
                             )}
                           </div>
-                          {isConfirming && (
-                            <div style={{ color:'#fca5a5', fontSize:'0.8rem', marginTop:'8px' }}>
-                              ⚠️ This will permanently delete "{acc.username}" and all their save data.
-                            </div>
-                          )}
+                          {isConfirming && <div style={{ color:'#fca5a5', fontSize:'0.8rem', marginTop:'8px' }}>⚠️ This will permanently delete "{acc.username}" and all their data.</div>}
                         </div>
                       );
                     })}
                   </div>
-
                   <div style={{ color:'rgba(255,255,255,0.3)', fontSize:'0.78rem', marginTop:'12px', textAlign:'center' }}>
-                    {Object.keys(allAccounts).length} registered account{Object.keys(allAccounts).length !== 1 ? 's' : ''}
+                    {allAccounts.length} registered account{allAccounts.length !== 1 ? 's' : ''}
                   </div>
                 </div>
               );
@@ -640,14 +656,14 @@
     // ============== SECRET DEV ROOM ==============
     function DevRoom({ onBack }) {
       const [chestClaimed, setChestClaimed] = useState(() => {
-        try { return localStorage.getItem('bsr_dev_chest') === new Date().toDateString(); } catch(e) { return false; }
+        try { return localStorage.getItem('pz_dev_chest') === new Date().toDateString(); } catch(e) { return false; }
       });
       const [chestMsg, setChestMsg] = useState('');
 
       const claimChest = (setPlayerData) => {
         if (chestClaimed) return;
         setChestClaimed(true);
-        try { localStorage.setItem('bsr_dev_chest', new Date().toDateString()); } catch(e) {}
+        try { localStorage.setItem('pz_dev_chest', new Date().toDateString()); } catch(e) {}
         setChestMsg('🪙 +100 coins! Come back tomorrow for more.');
       };
 
@@ -672,7 +688,7 @@
                     '🌮 Pug Taco was the best decision we ever made',
                     "🏆 If you found this... you win nothing. Go play the game.",
                     '🧠 The brain is just a CPU that gets tired',
-                    '⚡ BrainStorm Royale v2.0 — Now with secret rooms',
+                    '⚡ Pixel Zone v2.0 — Now with secret rooms',
                   ].map((msg, i) => (
                     <div key={i} style={{ color:'rgba(0,255,136,0.8)', fontSize:'0.9rem', padding:'8px 12px', background:'rgba(0,255,136,0.05)', borderRadius:'10px', borderLeft:'3px solid #00ff8844' }}>
                       {msg}
@@ -689,7 +705,7 @@
                 <button onClick={() => {
                   if (!chestClaimed) {
                     setChestClaimed(true);
-                    try { localStorage.setItem('bsr_dev_chest', new Date().toDateString()); } catch(e) {}
+                    try { localStorage.setItem('pz_dev_chest', new Date().toDateString()); } catch(e) {}
                     setChestMsg('🪙 +100 coins added!');
                   }
                 }} disabled={chestClaimed} style={{
@@ -726,7 +742,7 @@
     }
 
     // ============== MAIN COMPONENT ==============
-    function BrainStormRoyale() {
+    function PixelZone() {
       const [screen, setScreen] = useState('auth');
       const [playerData, setPlayerData] = useState(null);
       const [gameSettings, setGameSettings] = useState({ mode:'solo', matchLength:5, playerCount:20, roomCode:'' });
@@ -737,15 +753,19 @@
       const konamiRef = useRef([]);
       const KONAMI = ['arrowup','arrowup','arrowdown','arrowdown','arrowleft','arrowright','arrowleft','arrowright','b','a'];
 
-      // Load saved session on mount
+      // Load saved session on mount — fetch from Supabase
       useEffect(() => {
         const auth = loadAuth();
-        if (auth) {
-          const saved = loadGame();
-          if (saved && saved.username === auth.username) {
-            setPlayerData(saved);
-            setScreen('menu');
-          }
+        if (auth && auth.username && !auth.username.startsWith('Guest')) {
+          supa.from('accounts').select('*').eq('username', auth.username).single().then(({ data }) => {
+            if (data) {
+              setPlayerData(rowToPlayerData(data));
+              setScreen('menu');
+            } else {
+              // Account deleted or not found — clear local auth
+              try { localStorage.removeItem(AUTH_KEY); } catch(e) {}
+            }
+          });
         }
       }, []);
 
@@ -857,10 +877,11 @@
           )}
 
           {screen === 'auth'     && <AuthScreen onLogin={handleLogin} />}
-          {screen === 'menu'     && <MainMenu playerData={playerData} onPlay={() => setScreen('lobby')} onShop={() => setScreen('shop')} onSettings={() => setScreen('settings')} onLogout={handleLogout} />}
+          {screen === 'menu'     && <MainMenu playerData={playerData} onPlay={() => setScreen('lobby')} onShop={() => setScreen('shop')} onSettings={() => setScreen('settings')} onFriends={() => setScreen('friends')} onLogout={handleLogout} />}
           {screen === 'lobby'    && <Lobby settings={gameSettings} setSettings={setGameSettings} onStart={startGame} onBack={() => setScreen('menu')} />}
           {screen === 'shop'     && <Shop playerData={playerData} onBuy={buyItem} onSelect={selectItem} onBack={() => setScreen('menu')} />}
           {screen === 'settings' && <Settings playerData={playerData} setPlayerData={setPlayerData} onBack={() => setScreen('menu')} testMode={testMode} />}
+          {screen === 'friends'  && <Friends playerData={playerData} onBack={() => setScreen('menu')} />}
           {screen === 'game'     && <MultiplayerGame playerData={playerData} settings={gameSettings} onEnd={endGame} aimbotMode={aimbotMode} testMode={testMode} />}
           {screen === 'results'  && <Results result={gameResult} onPlayAgain={startGame} onMenu={() => setScreen('menu')} testMode={testMode} />}
           {screen === 'devroom'  && <DevRoom onBack={() => setScreen('menu')} />}
@@ -869,22 +890,41 @@
     }
 
     // ============== MAIN MENU ==============
-    function MainMenu({ playerData, onPlay, onShop, onSettings, onLogout }) {
+    function MainMenu({ playerData, onPlay, onShop, onSettings, onFriends, onLogout }) {
       const [hoveredButton, setHoveredButton] = useState(null);
+      const [pendingCount, setPendingCount]   = useState(0);
       const isGuest = playerData.username.startsWith('Guest');
+
+      useEffect(() => {
+        if (isGuest) return;
+        // Count pending friend requests
+        supa.from('friends')
+          .select('id', { count:'exact' })
+          .eq('receiver', playerData.username)
+          .eq('status', 'pending')
+          .then(({ count }) => setPendingCount(count || 0));
+
+        // Update online status
+        supa.from('accounts').update({ online: true, last_seen: new Date().toISOString() }).eq('username', playerData.username);
+
+        // Mark offline on unload
+        const markOffline = () => supa.from('accounts').update({ online: false }).eq('username', playerData.username);
+        window.addEventListener('beforeunload', markOffline);
+        return () => { window.removeEventListener('beforeunload', markOffline); markOffline(); };
+      }, []);
 
       return (
         <div style={styles.menuContainer}>
           <FloatingShapes />
           <div style={styles.menuContent}>
             <div style={styles.logoSection}>
-              <div style={styles.logoIcon}>🧠⚡</div>
+              <div style={styles.logoIcon}>🎮⚡</div>
               <h1 style={styles.logoTitle}>
-                <span style={styles.logoBrain}>Brain</span>
-                <span style={styles.logoStorm}>Storm</span>
+                <span style={styles.logoPixel}>Pixel</span>
+                <span style={styles.logoZone}>Zone</span>
               </h1>
-              <div style={styles.logoRoyale}>ROYALE</div>
-              <p style={styles.tagline}>Answer. Build. Survive. Win!</p>
+              <div style={styles.logoRoyale}>BATTLE</div>
+              <p style={styles.tagline}>Drop in. Build. Fight. Win!</p>
             </div>
 
             <div style={styles.playerCard}>
@@ -923,6 +963,17 @@
                   onMouseEnter={()=>setHoveredButton('settings')} onMouseLeave={()=>setHoveredButton(null)} onClick={onSettings}>
                   <span style={styles.btnIcon}>⚙️</span><span>Settings</span>
                 </button>
+                {!isGuest && (
+                  <button style={{ ...styles.secondaryButton, background:'linear-gradient(135deg,#10b981,#059669)', boxShadow:'0 8px 25px rgba(16,185,129,0.4)', transform: hoveredButton==='friends' ? 'scale(1.05) translateY(-3px)' : 'scale(1)', position:'relative' }}
+                    onMouseEnter={()=>setHoveredButton('friends')} onMouseLeave={()=>setHoveredButton(null)} onClick={onFriends}>
+                    <span style={styles.btnIcon}>👥</span><span>Friends</span>
+                    {pendingCount > 0 && (
+                      <div style={{ position:'absolute', top:'-6px', right:'-6px', background:'#ef4444', color:'#fff', borderRadius:'50%', width:'20px', height:'20px', fontSize:'0.7rem', fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                        {pendingCount}
+                      </div>
+                    )}
+                  </button>
+                )}
               </div>
             </div>
 
@@ -935,6 +986,250 @@
             <button onClick={onLogout} style={{ background:'rgba(239,68,68,0.15)', border:'2px solid rgba(239,68,68,0.3)', borderRadius:'20px', color:'rgba(255,255,255,0.5)', padding:'10px 24px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem' }}>
               {isGuest ? '🔑 Login / Sign Up' : '🚪 Log Out'}
             </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ============== FRIENDS ==============
+    function Friends({ playerData, onBack }) {
+      const [tab, setTab]           = useState('friends'); // friends | requests | search
+      const [friends, setFriends]   = useState([]);
+      const [requests, setRequests] = useState([]);
+      const [search, setSearch]     = useState('');
+      const [searchResults, setSearchResults] = useState([]);
+      const [msg, setMsg]           = useState('');
+      const [loading, setLoading]   = useState(true);
+      const me = playerData.username;
+
+      const flash = (text, color='#34d399') => {
+        setMsg({ text, color });
+        setTimeout(() => setMsg(''), 3000);
+      };
+
+      const loadFriends = async () => {
+        setLoading(true);
+        // Get all accepted friendships where I'm either side
+        const { data: rows } = await supa.from('friends').select('*').or(`sender.eq.${me},receiver.eq.${me}`).eq('status','accepted');
+        // Get pending requests sent TO me
+        const { data: reqs } = await supa.from('friends').select('*').eq('receiver', me).eq('status','pending');
+
+        const friendNames = (rows||[]).map(r => r.sender === me ? r.receiver : r.sender);
+        // Fetch their online status + level
+        if (friendNames.length > 0) {
+          const { data: profiles } = await supa.from('accounts').select('username,level,online,last_seen,selected_skin,stats').in('username', friendNames);
+          setFriends((profiles||[]).map(p => ({
+            ...p,
+            rowId: (rows||[]).find(r => r.sender===p.username||r.receiver===p.username)?.id,
+          })));
+        } else {
+          setFriends([]);
+        }
+        setRequests(reqs || []);
+        setLoading(false);
+      };
+
+      useEffect(() => { loadFriends(); }, [tab]);
+
+      const sendRequest = async (toUser) => {
+        if (toUser === me) return flash("That's you!", '#f87171');
+        // Check already friends or pending
+        const { data: existing } = await supa.from('friends').select('*')
+          .or(`and(sender.eq.${me},receiver.eq.${toUser}),and(sender.eq.${toUser},receiver.eq.${me})`);
+        if (existing && existing.length > 0) {
+          const s = existing[0].status;
+          return flash(s==='accepted' ? 'Already friends!' : 'Request already sent!', '#f87171');
+        }
+        await supa.from('friends').insert({ sender: me, receiver: toUser, status:'pending' });
+        flash(`Friend request sent to ${toUser}! 👋`);
+        setSearchResults(prev => prev.map(r => r.username === toUser ? { ...r, requested:true } : r));
+      };
+
+      const acceptRequest = async (row) => {
+        await supa.from('friends').update({ status:'accepted' }).eq('id', row.id);
+        flash(`You and ${row.sender} are now friends! 🎉`);
+        loadFriends();
+      };
+
+      const declineRequest = async (row) => {
+        await supa.from('friends').delete().eq('id', row.id);
+        flash(`Request from ${row.sender} declined.`, '#a5b4fc');
+        loadFriends();
+      };
+
+      const removeFriend = async (rowId, username) => {
+        await supa.from('friends').delete().eq('id', rowId);
+        flash(`Removed ${username} from friends.`, '#a5b4fc');
+        loadFriends();
+      };
+
+      const doSearch = async () => {
+        if (!search.trim() || search.trim().length < 2) return;
+        const { data } = await supa.from('accounts').select('username,level,online,selected_skin,stats')
+          .ilike('username', `%${search.trim()}%`).neq('username', me).limit(10);
+        // Mark already-requested
+        const { data: myReqs } = await supa.from('friends').select('*').or(`and(sender.eq.${me},receiver.eq.${data?.map(d=>d.username).join(',')})`);
+        setSearchResults((data||[]).map(r => ({
+          ...r,
+          requested: (myReqs||[]).some(req => req.receiver===r.username||req.sender===r.username)
+        })));
+      };
+
+      const skinEmoji = (skin) => ({ default:'😎',bubblegum:'🍬',mint:'🌿',ocean:'🌊',sunset:'🌅',golden:'⭐',galaxy:'🌌',cherry:'🍒',pug_taco:'🌮' }[skin]||'😎');
+      const skinColor = (skin) => ({ default:'#8b5cf6',bubblegum:'#ec4899',mint:'#10b981',ocean:'#0ea5e9',sunset:'#f97316',golden:'#eab308',galaxy:'#6366f1',cherry:'#ef4444',pug_taco:'#d97706' }[skin]||'#8b5cf6');
+
+      const tabBtn = (t, label) => (
+        <button key={t} onClick={() => setTab(t)} style={{
+          flex:1, padding:'12px', fontSize:'0.9rem', fontWeight:700, fontFamily:'inherit',
+          background: tab===t ? 'linear-gradient(135deg,#10b981,#059669)' : 'rgba(255,255,255,0.06)',
+          border:'none', borderRadius:'12px', color:'#fff', cursor:'pointer', position:'relative',
+        }}>
+          {label}
+          {t==='requests' && requests.length>0 && (
+            <span style={{ position:'absolute', top:'-6px', right:'-6px', background:'#ef4444', borderRadius:'50%', width:'18px', height:'18px', fontSize:'0.65rem', fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              {requests.length}
+            </span>
+          )}
+        </button>
+      );
+
+      const FriendCard = ({ f, showRemove }) => (
+        <div style={{ display:'flex', alignItems:'center', gap:'12px', background:'rgba(255,255,255,0.05)', borderRadius:'15px', padding:'12px 16px', border: f.online ? '1px solid rgba(16,185,129,0.3)' : '1px solid transparent' }}>
+          <div style={{ width:'42px', height:'42px', borderRadius:'50%', background:`linear-gradient(135deg,${skinColor(f.selected_skin)},${skinColor(f.selected_skin)}aa)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.3rem', border: f.online ? '2px solid #10b981' : '2px solid rgba(255,255,255,0.1)', flexShrink:0 }}>
+            {skinEmoji(f.selected_skin)}
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ color:'#fff', fontWeight:700, fontSize:'0.95rem' }}>{f.username}</div>
+            <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'2px' }}>
+              <span style={{ color: f.online ? '#10b981' : '#6b7280', fontSize:'0.75rem', fontWeight:600 }}>
+                {f.online ? '● Online' : '○ Offline'}
+              </span>
+              <span style={{ color:'#a5b4fc', fontSize:'0.75rem' }}>Lv{f.level}</span>
+              <span style={{ color:'#a5b4fc', fontSize:'0.75rem' }}>🏆{f.stats?.wins||0} 💀{f.stats?.kills||0}</span>
+            </div>
+          </div>
+          {showRemove && (
+            <button onClick={() => removeFriend(f.rowId, f.username)} style={{ background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:'10px', color:'#f87171', padding:'6px 12px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.8rem' }}>
+              Remove
+            </button>
+          )}
+        </div>
+      );
+
+      return (
+        <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#1e1b4b,#0f2027)', position:'relative', padding:'20px' }}>
+          <FloatingShapes colors={['#10b981','#34d399','#6ee7b7']} />
+          <button style={styles.backBtn} onClick={onBack}>← Back</button>
+
+          <div style={{ maxWidth:'600px', margin:'20px auto', position:'relative', zIndex:1 }}>
+            <h1 style={{ color:'#fff', fontSize:'2rem', fontWeight:900, textAlign:'center', marginBottom:'6px' }}>👥 Friends</h1>
+            <p style={{ color:'#a5b4fc', textAlign:'center', fontSize:'0.9rem', marginBottom:'25px' }}>Connect with other Pixel Zone players</p>
+
+            {msg && (
+              <div style={{ background:'rgba(0,0,0,0.4)', border:`1px solid ${msg.color}`, borderRadius:'12px', padding:'10px 16px', marginBottom:'16px', color: msg.color, textAlign:'center', fontSize:'0.9rem' }}>
+                {msg.text}
+              </div>
+            )}
+
+            {/* Tabs */}
+            <div style={{ display:'flex', gap:'8px', marginBottom:'20px' }}>
+              {tabBtn('friends', `👥 Friends (${friends.length})`)}
+              {tabBtn('requests', `📬 Requests`)}
+              {tabBtn('search', '🔍 Find Players')}
+            </div>
+
+            {loading && <div style={{ color:'#a5b4fc', textAlign:'center', padding:'30px' }}>Loading...</div>}
+
+            {/* Friends list */}
+            {!loading && tab === 'friends' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                {friends.length === 0 ? (
+                  <div style={{ color:'#a5b4fc', textAlign:'center', padding:'40px 20px' }}>
+                    <div style={{ fontSize:'3rem', marginBottom:'12px' }}>👥</div>
+                    <div style={{ fontSize:'1rem', marginBottom:'6px' }}>No friends yet</div>
+                    <div style={{ fontSize:'0.85rem', opacity:0.6 }}>Search for players to add them!</div>
+                  </div>
+                ) : (
+                  <>
+                    {friends.filter(f=>f.online).length > 0 && (
+                      <>
+                        <div style={{ color:'#10b981', fontSize:'0.8rem', fontWeight:700, marginBottom:'4px' }}>ONLINE</div>
+                        {friends.filter(f=>f.online).map(f => <FriendCard key={f.username} f={f} showRemove={true} />)}
+                        <div style={{ color:'#6b7280', fontSize:'0.8rem', fontWeight:700, marginTop:'8px', marginBottom:'4px' }}>OFFLINE</div>
+                      </>
+                    )}
+                    {friends.filter(f=>!f.online).map(f => <FriendCard key={f.username} f={f} showRemove={true} />)}
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Pending requests */}
+            {!loading && tab === 'requests' && (
+              <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                {requests.length === 0 ? (
+                  <div style={{ color:'#a5b4fc', textAlign:'center', padding:'40px 20px' }}>
+                    <div style={{ fontSize:'3rem', marginBottom:'12px' }}>📬</div>
+                    <div>No pending friend requests</div>
+                  </div>
+                ) : requests.map(req => (
+                  <div key={req.id} style={{ display:'flex', alignItems:'center', gap:'12px', background:'rgba(255,255,255,0.05)', borderRadius:'15px', padding:'14px 16px', border:'1px solid rgba(139,92,246,0.3)' }}>
+                    <div style={{ fontSize:'2rem' }}>👋</div>
+                    <div style={{ flex:1 }}>
+                      <div style={{ color:'#fff', fontWeight:700 }}>{req.sender}</div>
+                      <div style={{ color:'#a5b4fc', fontSize:'0.8rem' }}>wants to be your friend</div>
+                    </div>
+                    <div style={{ display:'flex', gap:'8px' }}>
+                      <button onClick={() => acceptRequest(req)} style={{ background:'linear-gradient(135deg,#10b981,#059669)', border:'none', borderRadius:'10px', color:'#fff', padding:'8px 16px', cursor:'pointer', fontFamily:'inherit', fontWeight:700, fontSize:'0.85rem' }}>
+                        ✓ Accept
+                      </button>
+                      <button onClick={() => declineRequest(req)} style={{ background:'rgba(239,68,68,0.15)', border:'1px solid rgba(239,68,68,0.4)', borderRadius:'10px', color:'#f87171', padding:'8px 12px', cursor:'pointer', fontFamily:'inherit', fontSize:'0.85rem' }}>
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Search */}
+            {tab === 'search' && (
+              <div>
+                <div style={{ display:'flex', gap:'10px', marginBottom:'16px' }}>
+                  <input value={search} onChange={e => setSearch(e.target.value)}
+                    onKeyDown={e => e.key==='Enter' && doSearch()}
+                    placeholder="Search by username..."
+                    style={{ flex:1, padding:'13px 16px', fontSize:'1rem', fontFamily:'inherit', background:'rgba(255,255,255,0.1)', border:'2px solid rgba(255,255,255,0.2)', borderRadius:'12px', color:'#fff', outline:'none' }}
+                  />
+                  <button onClick={doSearch} style={{ padding:'13px 22px', background:'linear-gradient(135deg,#8b5cf6,#7c3aed)', border:'none', borderRadius:'12px', color:'#fff', cursor:'pointer', fontFamily:'inherit', fontWeight:700, fontSize:'1rem' }}>
+                    Search
+                  </button>
+                </div>
+                <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                  {searchResults.map(r => (
+                    <div key={r.username} style={{ display:'flex', alignItems:'center', gap:'12px', background:'rgba(255,255,255,0.05)', borderRadius:'15px', padding:'12px 16px' }}>
+                      <div style={{ width:'40px', height:'40px', borderRadius:'50%', background:`linear-gradient(135deg,${skinColor(r.selected_skin)},${skinColor(r.selected_skin)}aa)`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.2rem' }}>
+                        {skinEmoji(r.selected_skin)}
+                      </div>
+                      <div style={{ flex:1 }}>
+                        <div style={{ color:'#fff', fontWeight:700 }}>{r.username}</div>
+                        <div style={{ color:'#a5b4fc', fontSize:'0.75rem' }}>
+                          Lv{r.level} · {r.online ? '🟢 Online' : '⚫ Offline'} · 🏆{r.stats?.wins||0}
+                        </div>
+                      </div>
+                      <button onClick={() => sendRequest(r.username)} disabled={r.requested} style={{
+                        background: r.requested ? 'rgba(255,255,255,0.08)' : 'linear-gradient(135deg,#10b981,#059669)',
+                        border:'none', borderRadius:'10px', color: r.requested ? '#6b7280' : '#fff',
+                        padding:'8px 16px', cursor: r.requested ? 'not-allowed' : 'pointer',
+                        fontFamily:'inherit', fontWeight:700, fontSize:'0.85rem'
+                      }}>
+                        {r.requested ? '✓ Sent' : '+ Add'}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       );
@@ -1134,257 +1429,622 @@
 
     // ============== GAME ==============
 
-    // ============== MULTIPLAYER GAME ==============
-    const SERVER_URL = 'https://pixelio123-production.up.railway.app';
+    // ============== SUPABASE MULTIPLAYER ==============
+    const SUPABASE_URL  = 'https://qpsczsblatvctkeuqgle.supabase.co';
+    const SUPABASE_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFwc2N6c2JsYXR2Y3RrZXVxZ2xlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODUyMzk0NDgsImV4cCI6MjEwMDgxNTQ0OH0.1mSh1d6Q6u6LMx4xYwEKs1dyjr6DckhxUSXcjUlW2q4';
+    const supa          = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+    // ── Constants ──────────────────────────────────────────────────────────────
+    const MAP_SZ     = 2000;
+    const PLYR_SZ    = 30;
+    const PLYR_SPD   = 5;
+    const BULL_SPD   = 14;
+    const TICK_MS    = 50; // 20fps client prediction
+
+    const WEP = {
+      pistol:   { name:'Pistol',   dmg:15, rate:400,  ammo:1, range:300, icon:'🔫', col:'#a78bfa' },
+      shotgun:  { name:'Shotgun',  dmg:40, rate:800,  ammo:2, range:150, icon:'💥', col:'#f472b6' },
+      rifle:    { name:'Rifle',    dmg:25, rate:200,  ammo:1, range:400, icon:'🎯', col:'#60a5fa' },
+      sniper:   { name:'Sniper',   dmg:75, rate:1500, ammo:1, range:600, icon:'🔭', col:'#34d399' },
+      smg:      { name:'SMG',      dmg:10, rate:100,  ammo:1, range:200, icon:'🌀', col:'#f59e0b' },
+      rocket:   { name:'Rocket',   dmg:90, rate:2000, ammo:3, range:500, icon:'🚀', col:'#ef4444' },
+      laser:    { name:'Laser',    dmg:20, rate:150,  ammo:1, range:450, icon:'🔆', col:'#06b6d4' },
+      grenade:  { name:'Grenade',  dmg:60, rate:1200, ammo:2, range:350, icon:'💣', col:'#84cc16' },
+      crossbow: { name:'Crossbow', dmg:55, rate:900,  ammo:1, range:380, icon:'🏹', col:'#8b5cf6' },
+      minigun:  { name:'Minigun',  dmg:8,  rate:60,   ammo:1, range:280, icon:'⚙️', col:'#fb923c' },
+    };
+
+    const TRIVIA_Q = [
+      { q:"What planet is the Red Planet?",      a:["Mars","Venus","Jupiter","Mercury"],    c:0 },
+      { q:"Sides on a hexagon?",                 a:["5","6","7","8"],                        c:1 },
+      { q:"Largest ocean?",                      a:["Atlantic","Pacific","Indian","Arctic"], c:1 },
+      { q:"Who wrote Romeo and Juliet?",         a:["Dickens","Shakespeare","Twain","Austen"],c:1},
+      { q:"15 × 8 = ?",                          a:["110","115","120","125"],                c:2 },
+      { q:"Gas plants absorb?",                  a:["Oxygen","Nitrogen","CO2","Hydrogen"],   c:2 },
+      { q:"How many continents?",                a:["5","6","7","8"],                        c:2 },
+      { q:"Capital of Japan?",                   a:["Seoul","Beijing","Tokyo","Bangkok"],    c:2 },
+      { q:"Fastest animal?",                     a:["Lion","Cheetah","Horse","Falcon"],      c:1 },
+      { q:"WW2 ended in?",                       a:["1943","1944","1945","1946"],            c:2 },
+      { q:"Symbol for water?",                   a:["H2O","CO2","NaCl","O2"],               c:0 },
+      { q:"Players on soccer team?",             a:["9","10","11","12"],                     c:2 },
+      { q:"Largest planet?",                     a:["Saturn","Jupiter","Neptune","Uranus"],  c:1 },
+      { q:"Who painted Mona Lisa?",              a:["Picasso","Da Vinci","Van Gogh","Monet"],c:1},
+      { q:"144 ÷ 12 = ?",                        a:["10","11","12","14"],                   c:2 },
+    ];
+
+    const SKIN_COLORS = { default:'#8b5cf6',bubblegum:'#ec4899',mint:'#10b981',ocean:'#0ea5e9',sunset:'#f97316',golden:'#eab308',galaxy:'#6366f1',cherry:'#ef4444',pug_taco:'#d97706' };
+    const SKIN_EMOJI  = { default:'😎',bubblegum:'🍬',mint:'🌿',ocean:'🌊',sunset:'🌅',golden:'⭐',galaxy:'🌌',cherry:'🍒',pug_taco:'🌮' };
+
+    function randSpawn() {
+      const angle = Math.random() * Math.PI * 2;
+      const dist  = MAP_SZ * 0.25 + Math.random() * MAP_SZ * 0.2;
+      return { x: MAP_SZ/2 + Math.cos(angle)*dist, y: MAP_SZ/2 + Math.sin(angle)*dist };
+    }
+
+    function genLoot() {
+      const types = ['weapon','ammo','materials','health'];
+      const weps  = Object.keys(WEP).filter(w => w !== 'pistol');
+      return Array.from({ length: 40 }, (_, i) => {
+        const type = types[Math.floor(Math.random()*types.length)];
+        return {
+          id: 'loot_'+i,
+          x:  150 + Math.random()*(MAP_SZ-300),
+          y:  150 + Math.random()*(MAP_SZ-300),
+          type, weapon: type==='weapon' ? weps[Math.floor(Math.random()*weps.length)] : null,
+          value: type==='ammo'?20:type==='materials'?30:type==='health'?25:0,
+        };
+      });
+    }
+
+    function genStations() {
+      return Array.from({ length:6 }, (_,i) => {
+        const a = (i/6)*Math.PI*2;
+        return { id:'st_'+i, x:MAP_SZ/2+Math.cos(a)*MAP_SZ*0.25, y:MAP_SZ/2+Math.sin(a)*MAP_SZ*0.25, radius:55, used:false };
+      });
+    }
+
+    // ── Bot AI (client-side bots for the host) ─────────────────────────────────
+    const BOT_NAMES = ['AceBot','PixelBot','ZoneBot','StormBot','NeonBot','SwiftBot','IronBot','ZenBot','VoidBot','BlitzBot'];
+
+    function createBot(id, i) {
+      const pos = randSpawn();
+      const wepList = Object.keys(WEP).filter(w=>w!=='pistol');
+      const w = wepList[Math.floor(Math.random()*wepList.length)];
+      return {
+        id, username: BOT_NAMES[i % BOT_NAMES.length], isBot:true,
+        skin:'default', x:pos.x, y:pos.y, vx:0, vy:0,
+        health:100, shield:0, ammo:999, materials:50,
+        weapons:['pistol',w], currentWeapon:w,
+        dead:false, kills:0, lastShot:0, moveTimer:0, _vx:0, _vy:0,
+        aimAngle:0,
+      };
+    }
+
+    // ── Main Multiplayer Component ─────────────────────────────────────────────
     function MultiplayerGame({ playerData, settings, onEnd, aimbotMode, testMode }) {
-      const canvasRef      = useRef(null);
-      const socketRef      = useRef(null);
-      const gameStateRef   = useRef(null);
-      const keysRef        = useRef({});
-      const mouseRef       = useRef({ x:0, y:0, down:false, angle:0 });
-      const inputIntervalRef = useRef(null);
-      const renderRef      = useRef(null);
-      const myIdRef        = useRef(null);
-      const emoteTimers    = useRef({});
+      const canvasRef    = useRef(null);
+      const stateRef     = useRef(null);   // full local game state
+      const keysRef      = useRef({});
+      const mouseRef     = useRef({ x:0, y:0, down:false, angle:0 });
+      const channelRef   = useRef(null);
+      const renderRef    = useRef(null);
+      const tickRef      = useRef(null);
+      const myIdRef      = useRef(playerData.username + '_' + Date.now());
+      const isHostRef    = useRef(false);
+      const emoteMapRef  = useRef({});
 
-      const [phase, setPhase]         = useState('connecting');  // connecting|waiting|countdown|active|dead|ended
-      const [countdown, setCountdown] = useState(15);
-      const [roomId, setRoomId]       = useState('');
-      const [hud, setHud]             = useState({ health:100, shield:0, ammo:35, materials:50, weapon:'pistol', weapons:['pistol'], alive:0, kills:0, timeLeft:300, ping:0 });
-      const [notification, setNotification] = useState(null);
-      const [triviaPopup, setTriviaPopup]   = useState(null);
-      const [waitingPlayers, setWaitingPlayers] = useState([]);
-      const [deathInfo, setDeathInfo]           = useState(null);
-      const [pingMs, setPingMs]                 = useState(0);
-      const [emotes, setEmotes]                 = useState({});  // playerId -> emoji
+      const [phase, setPhase]           = useState('joining'); // joining|waiting|countdown|active|dead|ended
+      const [countdown, setCountdown]   = useState(15);
+      const [roomId, setRoomId]         = useState('');
+      const [waitPlayers, setWaitPlayers] = useState([]);
+      const [hud, setHud]               = useState({ health:100, shield:0, ammo:35, materials:50, weapon:'pistol', weapons:['pistol'], alive:1, kills:0, timeLeft:300 });
+      const [notif, setNotif]           = useState(null);
+      const [triviaPopup, setTriviaPopup] = useState(null);
+      const [deathInfo, setDeathInfo]   = useState(null);
+      const [pingMs, setPingMs]         = useState(0);
+      const triviaRef = useRef(null);
 
       const showNotif = useCallback((text, icon='✨', color='#8b5cf6') => {
-        setNotification({ text, icon, color });
-        setTimeout(() => setNotification(null), 2500);
+        setNotif({ text, icon, color });
+        setTimeout(() => setNotif(null), 2500);
       }, []);
 
-      // ── Connect & join ──────────────────────────────────────────────────────
+      // ── Join / create room ───────────────────────────────────────────────────
       useEffect(() => {
-        const socket = window.io(SERVER_URL, {
-          transports: ['polling', 'websocket'],
-          upgrade: true,
-          reconnectionAttempts: 5,
-          reconnectionDelay: 1000,
-          path: '/socket.io',
-          forceNew: true,
-        });
-        socketRef.current = socket;
+        const myId   = myIdRef.current;
+        const rCode  = settings.roomCode ? 'priv_'+settings.roomCode.toUpperCase() : null;
 
-        socket.on('connect', () => {
-          myIdRef.current = socket.id;
-          socket.emit('joinGame', {
+        async function join() {
+          // Find or create a room
+          let roomData = null;
+
+          if (rCode) {
+            // Private room
+            const { data } = await supa.from('rooms').select('*').eq('id', rCode).single();
+            if (!data) {
+              // Create it
+              await supa.from('rooms').insert({ id: rCode, host: myId, phase:'waiting', loot: genLoot(), stations: genStations(), storm_radius: MAP_SZ*0.7, time_left: 300, countdown: 15 });
+              roomData = { id: rCode, host: myId };
+              isHostRef.current = true;
+            } else {
+              roomData = data;
+            }
+          } else {
+            // Find open public room
+            const { data: openRooms } = await supa.from('rooms').select('*').eq('phase','waiting').lt('player_count', 20).order('created_at').limit(1);
+            if (openRooms && openRooms.length > 0) {
+              roomData = openRooms[0];
+            } else {
+              const newId = 'pub_' + Math.random().toString(36).slice(2,10);
+              await supa.from('rooms').insert({ id: newId, host: myId, phase:'waiting', loot: genLoot(), stations: genStations(), storm_radius: MAP_SZ*0.7, time_left: 300, countdown: 15 });
+              roomData = { id: newId, host: myId };
+              isHostRef.current = true;
+            }
+          }
+
+          setRoomId(roomData.id);
+
+          // Insert myself as a player
+          const spawn = randSpawn();
+          await supa.from('players').upsert({
+            id: myId, room_id: roomData.id,
             username: playerData.username,
-            skin:     playerData.selectedSkin || 'default',
-            roomCode: settings.roomCode || null,
+            skin: playerData.selectedSkin || 'default',
+            x: spawn.x, y: spawn.y,
+            health: 100, shield: 0, ammo: 35, materials: 50,
+            weapons: ['pistol'], current_weapon: 'pistol',
+            dead: false, kills: 0, aim_angle: 0,
+            last_seen: Date.now(),
           });
-          setPhase('waiting');
-        });
 
-        socket.on('connect_error', (err) => {
-          console.error('Connection error:', err.message);
+          // Init local state
+          stateRef.current = {
+            roomId: roomData.id,
+            me: {
+              id: myId, username: playerData.username,
+              skin: playerData.selectedSkin || 'default',
+              x: spawn.x, y: spawn.y, vx:0, vy:0,
+              health:100, shield:0, ammo:35, materials:50,
+              weapons:['pistol'], currentWeapon:'pistol',
+              dead:false, kills:0, lastShot:0, speedBoost:1, speedTimer:0,
+              aimAngle:0,
+            },
+            players: {},   // other real players: id -> data
+            bots:    {},   // bots (managed by host): id -> data
+            bullets: [],
+            loot:    roomData.loot || genLoot(),
+            stations: roomData.stations || genStations(),
+            buildings: [],
+            storm:   { x:MAP_SZ/2, y:MAP_SZ/2, radius: roomData.storm_radius || MAP_SZ*0.7, targetRadius: MAP_SZ*0.08, speed:0.04 },
+            timeLeft: roomData.time_left || 300,
+            phase:   roomData.phase || 'waiting',
+            alive:   1,
+          };
+
+          // If host, spawn bots after short delay
+          if (isHostRef.current && !testMode) {
+            setTimeout(async () => {
+              const bots = {};
+              for (let i = 0; i < 8; i++) {
+                const bot = createBot('bot_'+i+'_'+roomData.id, i);
+                bots[bot.id] = bot;
+              }
+              stateRef.current.bots = bots;
+              // Publish bots
+              await supa.from('rooms').update({ bots: bots }).eq('id', roomData.id);
+            }, 2000);
+          }
+
+          setPhase('waiting');
+          subscribeToRoom(roomData.id);
+        }
+
+        join().catch(err => {
+          console.error('Join error:', err);
           setPhase('error');
         });
 
-        socket.on('joinedRoom', ({ roomId, phase: rPhase, players, loot, stations }) => {
-          setRoomId(roomId);
-          setWaitingPlayers(players);
-          gameStateRef.current = {
-            players:{}, bots:{}, bullets:[], loot, stations,
-            buildings:[], storm:{ x:1000,y:1000,radius:1400 },
-            timeLeft:300, alive:players.length,
-          };
-          players.forEach(p => { gameStateRef.current.players[p.id] = p; });
-          if (rPhase === 'countdown') setPhase('countdown');
-        });
-
-        socket.on('playerJoined', (p) => {
-          setWaitingPlayers(prev => [...prev.filter(x=>x.id!==p.id), p]);
-          if (gameStateRef.current) gameStateRef.current.players[p.id] = p;
-          showNotif(`${p.username} joined!`, '👋', '#10b981');
-        });
-
-        socket.on('playerLeft', ({ id }) => {
-          setWaitingPlayers(prev => prev.filter(p=>p.id!==id));
-          if (gameStateRef.current) delete gameStateRef.current.players[id];
-        });
-
-        socket.on('countdownStart', ({ seconds }) => {
-          setCountdown(seconds);
-          setPhase('countdown');
-        });
-
-        socket.on('countdown', ({ seconds }) => setCountdown(seconds));
-
-        socket.on('matchStart', ({ loot, stations }) => {
-          if (gameStateRef.current) {
-            gameStateRef.current.loot     = loot;
-            gameStateRef.current.stations = stations;
-          }
-          setPhase('active');
-        });
-
-        socket.on('gameState', (state) => {
-          const gs = gameStateRef.current;
-          if (!gs) return;
-          // Merge server state (server is authoritative)
-          gs.bullets   = state.bullets;
-          gs.loot      = state.loot;
-          gs.buildings = state.buildings;
-          gs.storm     = state.storm;
-          gs.timeLeft  = state.timeLeft;
-          gs.alive     = state.alive;
-
-          const newPlayers = {};
-          state.players.forEach(p => { newPlayers[p.id] = p; });
-          gs.players = newPlayers;
-
-          const newBots = {};
-          state.bots.forEach(b => { newBots[b.id] = b; });
-          gs.bots = newBots;
-
-          // Update HUD from own player
-          const me = gs.players[myIdRef.current];
-          if (me) {
-            setHud(h => ({ ...h, health:me.health, shield:me.shield, ammo:me.ammo, materials:me.materials, weapon:me.currentWeapon, weapons:me.weapons, alive:gs.alive, kills:me.kills, timeLeft:gs.timeLeft }));
-          }
-        });
-
-        socket.on('lootPickup', ({ itemId, player }) => {
-          if (player.id === myIdRef.current) showNotif('Picked up item!','📦','#a78bfa');
-        });
-
-        socket.on('triviaPrompt', ({ stationId, question }) => {
-          setTriviaPopup({ stationId, question });
-        });
-
-        socket.on('triviaResult', ({ correct, reward, player }) => {
-          if (correct) {
-            showNotif(`${reward.name}! Correct answer!`,'🧠','#10b981');
-          } else {
-            showNotif('Wrong answer!','❌','#ef4444');
-          }
-          setTriviaPopup(null);
-        });
-
-        socket.on('killConfirmed', ({ victim, kills }) => {
-          showNotif(`Eliminated ${victim}!`,'💀','#ef4444');
-        });
-
-        socket.on('playerDied', ({ id, username }) => {
-          if (id !== myIdRef.current) showNotif(`${username} eliminated!`,'💀','#6b7280');
-        });
-
-        socket.on('playerEmote', ({ playerId, emoji }) => {
-          setEmotes(prev => ({ ...prev, [playerId]: emoji }));
-          clearTimeout(emoteTimers.current[playerId]);
-          emoteTimers.current[playerId] = setTimeout(() => {
-            setEmotes(prev => { const n={...prev}; delete n[playerId]; return n; });
-          }, 2500);
-        });
-
-        socket.on('youDied', ({ placement, kills, killedBy }) => {
-          setDeathInfo({ placement, kills, killedBy });
-          setPhase('dead');
-        });
-
-        socket.on('matchEnd', (result) => {
-          setTimeout(() => onEnd(result), 500);
-        });
-
-        // Ping measurement
-        const pingInterval = setInterval(() => {
-          const t0 = Date.now();
-          socket.emit('ping', () => setPingMs(Date.now() - t0));
-        }, 3000);
-
         return () => {
-          socket.disconnect();
-          clearInterval(pingInterval);
+          // Cleanup
+          supa.from('players').delete().eq('id', myId).then(() => {});
+          channelRef.current?.unsubscribe();
           cancelAnimationFrame(renderRef.current);
-          clearInterval(inputIntervalRef.current);
+          clearInterval(tickRef.current);
         };
       }, []);
 
-      // ── Input sending loop (20/s) ─────────────────────────────────────────
+      // ── Supabase Realtime subscription ──────────────────────────────────────
+      function subscribeToRoom(rid) {
+        const channel = supa.channel('room_' + rid, { config: { broadcast: { self: false } } });
+
+        // Listen for player position updates
+        channel.on('broadcast', { event: 'player_update' }, ({ payload }) => {
+          const gs = stateRef.current;
+          if (!gs || payload.id === myIdRef.current) return;
+          gs.players[payload.id] = { ...gs.players[payload.id], ...payload };
+          setWaitPlayers(prev => {
+            const exists = prev.find(p => p.id === payload.id);
+            if (!exists) return [...prev, payload];
+            return prev.map(p => p.id === payload.id ? { ...p, ...payload } : p);
+          });
+        });
+
+        // Listen for bullets
+        channel.on('broadcast', { event: 'bullet' }, ({ payload }) => {
+          const gs = stateRef.current;
+          if (!gs) return;
+          gs.bullets.push({ ...payload, traveled:0 });
+        });
+
+        // Listen for loot picked up
+        channel.on('broadcast', { event: 'loot_taken' }, ({ payload }) => {
+          const gs = stateRef.current;
+          if (!gs) return;
+          gs.loot = gs.loot.filter(l => l.id !== payload.id);
+        });
+
+        // Listen for room phase changes (host broadcasts)
+        channel.on('broadcast', { event: 'room_update' }, ({ payload }) => {
+          const gs = stateRef.current;
+          if (!gs) return;
+          if (payload.phase === 'countdown') {
+            setPhase('countdown');
+            setCountdown(payload.countdown);
+          }
+          if (payload.phase === 'active') {
+            setPhase('active');
+            gs.phase = 'active';
+            if (payload.loot)     gs.loot     = payload.loot;
+            if (payload.stations) gs.stations = payload.stations;
+            if (payload.bots)     gs.bots     = payload.bots;
+          }
+          if (payload.storm)    gs.storm.radius = payload.storm;
+          if (payload.timeLeft !== undefined) gs.timeLeft = payload.timeLeft;
+          if (payload.bots)     gs.bots = payload.bots;
+        });
+
+        // Countdown ticks from host
+        channel.on('broadcast', { event: 'countdown' }, ({ payload }) => {
+          setCountdown(payload.seconds);
+          if (payload.seconds <= 0) setPhase('active');
+        });
+
+        // Emotes
+        channel.on('broadcast', { event: 'emote' }, ({ payload }) => {
+          emoteMapRef.current[payload.id] = payload.emoji;
+          setTimeout(() => { delete emoteMapRef.current[payload.id]; }, 2500);
+        });
+
+        // Player left
+        channel.on('broadcast', { event: 'player_left' }, ({ payload }) => {
+          const gs = stateRef.current;
+          if (!gs) return;
+          delete gs.players[payload.id];
+          setWaitPlayers(prev => prev.filter(p => p.id !== payload.id));
+        });
+
+        // Kill/death events
+        channel.on('broadcast', { event: 'player_died' }, ({ payload }) => {
+          const gs = stateRef.current;
+          if (!gs) return;
+          if (payload.id === myIdRef.current) {
+            setDeathInfo({ placement: payload.placement, kills: gs.me.kills, killedBy: payload.killedBy });
+            setPhase('dead');
+            gs.me.dead = true;
+          } else if (gs.players[payload.id]) {
+            gs.players[payload.id].dead = true;
+          } else if (gs.bots[payload.id]) {
+            gs.bots[payload.id].dead = true;
+          }
+          showNotif(payload.id === myIdRef.current ? '' : `${payload.username} eliminated!`, '💀', '#6b7280');
+        });
+
+        channel.subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            channelRef.current = channel;
+            // Announce presence
+            channel.send({ type:'broadcast', event:'player_update', payload: {
+              id: myIdRef.current, username: playerData.username,
+              skin: playerData.selectedSkin || 'default',
+              x: stateRef.current?.me.x, y: stateRef.current?.me.y,
+              health:100, dead:false,
+            }});
+
+            // Host starts countdown after 5s
+            if (isHostRef.current) {
+              setTimeout(() => startCountdown(channel, rid), 5000);
+            }
+          }
+        });
+      }
+
+      async function startCountdown(channel, rid) {
+        channel.send({ type:'broadcast', event:'room_update', payload:{ phase:'countdown', countdown:10 } });
+        setPhase('countdown');
+        let c = 10;
+        setCountdown(c);
+        const iv = setInterval(async () => {
+          c--;
+          setCountdown(c);
+          channel.send({ type:'broadcast', event:'countdown', payload:{ seconds:c } });
+          if (c <= 0) {
+            clearInterval(iv);
+            const gs = stateRef.current;
+            channel.send({ type:'broadcast', event:'room_update', payload:{
+              phase:'active', loot: gs.loot, stations: gs.stations, bots: gs.bots,
+            }});
+            setPhase('active');
+            gs.phase = 'active';
+            await supa.from('rooms').update({ phase:'active' }).eq('id', rid);
+          }
+        }, 1000);
+      }
+
+      // ── Game tick (client-side: move self, bots if host, bullets) ───────────
       useEffect(() => {
         if (phase !== 'active') return;
-        inputIntervalRef.current = setInterval(() => {
-          if (!socketRef.current) return;
-          const keys = keysRef.current;
-          socketRef.current.emit('input', {
-            up:       !!(keys.w || keys.arrowup),
-            down:     !!(keys.s || keys.arrowdown),
-            left:     !!(keys.a || keys.arrowleft),
-            right:    !!(keys.d || keys.arrowright),
-            shooting: mouseRef.current.down && !triviaPopup,
-            aimAngle: mouseRef.current.angle,
-            interact: !!(keys.e),
-          });
-          if (keys.e) keysRef.current.e = false;
-        }, 50);
-        return () => clearInterval(inputIntervalRef.current);
-      }, [phase, triviaPopup]);
+        const myId = myIdRef.current;
+        let lastBroadcast = 0;
+        let lastShot = 0;
 
-      // ── Canvas render loop ────────────────────────────────────────────────
+        tickRef.current = setInterval(() => {
+          const gs = stateRef.current;
+          if (!gs || gs.me.dead) return;
+          const me = gs.me;
+          const now = Date.now();
+          const keys = keysRef.current;
+          const spd = PLYR_SPD * (me.speedBoost || 1);
+
+          // Move
+          me.vx = ((keys.d?1:0)-(keys.a?1:0)) * spd;
+          me.vy = ((keys.s?1:0)-(keys.w?1:0)) * spd;
+          me.x  = Math.max(PLYR_SZ, Math.min(MAP_SZ-PLYR_SZ, me.x + me.vx));
+          me.y  = Math.max(PLYR_SZ, Math.min(MAP_SZ-PLYR_SZ, me.y + me.vy));
+          me.aimAngle = mouseRef.current.angle;
+
+          // Speed timer
+          if (me.speedTimer > 0) { me.speedTimer -= TICK_MS; if(me.speedTimer<=0) me.speedBoost=1; }
+
+          // Storm damage
+          const distFromCenter = Math.hypot(me.x-gs.storm.x, me.y-gs.storm.y);
+          if (distFromCenter > gs.storm.radius) {
+            me.health -= 0.3;
+            if (me.health <= 0) { me.health=0; diePlayer('Storm'); }
+          }
+
+          // Shoot
+          const w = WEP[me.currentWeapon];
+          if (mouseRef.current.down && w && me.ammo >= w.ammo && now - me.lastShot > w.rate && !triviaRef.current) {
+            me.lastShot = now;
+            me.ammo -= w.ammo;
+            const bullet = {
+              id: myId+'_b_'+now,
+              ownerId: myId, ownerName: playerData.username,
+              x: me.x, y: me.y,
+              vx: Math.cos(me.aimAngle)*BULL_SPD,
+              vy: Math.sin(me.aimAngle)*BULL_SPD,
+              dmg: w.dmg, range: w.range, weapon: me.currentWeapon,
+              col: w.col, traveled:0,
+            };
+            gs.bullets.push(bullet);
+            channelRef.current?.send({ type:'broadcast', event:'bullet', payload: bullet });
+          }
+
+          // Loot pickup
+          gs.loot = gs.loot.filter(item => {
+            if (Math.hypot(me.x-item.x, me.y-item.y) < PLYR_SZ+18) {
+              applyLoot(me, item);
+              channelRef.current?.send({ type:'broadcast', event:'loot_taken', payload:{ id:item.id } });
+              showNotif(item.type==='weapon'?(WEP[item.weapon]?.name||'Weapon')+' picked up!':'Got '+item.type,'📦','#a78bfa');
+              return false;
+            }
+            return true;
+          });
+
+          // Trivia station
+          if (keys.e) {
+            gs.stations.forEach(st => {
+              if (!st.used && Math.hypot(me.x-st.x, me.y-st.y) < st.radius+PLYR_SZ) {
+                st.used = true;
+                const q = TRIVIA_Q[Math.floor(Math.random()*TRIVIA_Q.length)];
+                triviaRef.current = { q };
+                setTriviaPopup({ q });
+                keysRef.current.e = false;
+              }
+            });
+          }
+
+          // Build
+          if (keys.b && me.materials >= 10) {
+            me.materials -= 10;
+            gs.buildings.push({ id:'b_'+now, x:me.x+Math.cos(me.aimAngle)*65, y:me.y+Math.sin(me.aimAngle)*65, w:65,h:16,angle:me.aimAngle,health:120 });
+            keysRef.current.b = false;
+          }
+
+          // Move bullets + check hits
+          const allEntities = { ...gs.players, ...gs.bots };
+          gs.bullets = gs.bullets.filter(b => {
+            b.x += b.vx; b.y += b.vy; b.traveled += Math.hypot(b.vx,b.vy);
+            if (b.traveled>b.range||b.x<0||b.x>MAP_SZ||b.y<0||b.y>MAP_SZ) return false;
+            // Hit self if bullet from others
+            if (b.ownerId !== myId && !me.dead && Math.hypot(b.x-me.x,b.y-me.y)<PLYR_SZ) {
+              if (me.shield>0) me.shield=Math.max(0,me.shield-b.dmg);
+              else me.health -= b.dmg;
+              if (me.health<=0) diePlayer(b.ownerName);
+              return false;
+            }
+            // Hit other bots if I'm host
+            if (isHostRef.current && b.ownerId === myId) {
+              for (const bot of Object.values(gs.bots)) {
+                if (!bot.dead && Math.hypot(b.x-bot.x,b.y-bot.y)<PLYR_SZ) {
+                  bot.health -= b.dmg;
+                  if (bot.health<=0) {
+                    bot.dead=true; me.kills++;
+                    channelRef.current?.send({ type:'broadcast', event:'player_died', payload:{ id:bot.id, username:bot.username, killedBy:playerData.username, placement:0 }});
+                    showNotif(`Eliminated ${bot.username}!`,'💀','#ef4444');
+                  }
+                  return false;
+                }
+              }
+            }
+            return true;
+          });
+
+          // Host: tick bots
+          if (isHostRef.current) {
+            Object.values(gs.bots).forEach(bot => {
+              if (bot.dead) return;
+              tickBot(bot, gs, now);
+            });
+            // Storm shrink (host authoritative)
+            if (gs.storm.radius > gs.storm.targetRadius) {
+              gs.storm.radius -= gs.storm.speed;
+              if (now % 5000 < TICK_MS) { // broadcast storm every 5s
+                channelRef.current?.send({ type:'broadcast', event:'room_update', payload:{ storm: gs.storm.radius, timeLeft: gs.timeLeft }});
+              }
+            }
+            gs.timeLeft -= TICK_MS/1000;
+            if (gs.timeLeft <= 0) endMatch();
+          }
+
+          // Broadcast my position every 50ms
+          if (now - lastBroadcast > 50) {
+            lastBroadcast = now;
+            channelRef.current?.send({ type:'broadcast', event:'player_update', payload:{
+              id:myId, username:playerData.username, skin:me.skin||playerData.selectedSkin||'default',
+              x:Math.round(me.x), y:Math.round(me.y), health:me.health, shield:me.shield,
+              dead:me.dead, kills:me.kills, aimAngle:me.aimAngle, currentWeapon:me.currentWeapon,
+            }});
+          }
+
+          // Count alive
+          const aliveCount = 1 + Object.values(gs.players).filter(p=>!p.dead).length + Object.values(gs.bots).filter(b=>!b.dead).length;
+          gs.alive = aliveCount;
+
+          // Update HUD
+          setHud({ health:Math.max(0,Math.round(me.health)), shield:Math.round(me.shield||0), ammo:me.ammo, materials:me.materials, weapon:me.currentWeapon, weapons:me.weapons, alive:aliveCount, kills:me.kills, timeLeft:Math.round(gs.timeLeft) });
+
+          // Win check
+          if (aliveCount <= 1 && !me.dead) endMatch(true);
+
+        }, TICK_MS);
+
+        return () => clearInterval(tickRef.current);
+      }, [phase]);
+
+      function tickBot(bot, gs, now) {
+        // Simple bot AI
+        bot.moveTimer -= TICK_MS;
+        const enemies = Object.values(gs.players).filter(p=>!p.dead);
+        const me = gs.me;
+        const allEnemies = [...enemies, (!me.dead ? [me] : [])].flat();
+        let nearest=null, nd=Infinity;
+        allEnemies.forEach(e => { const d=Math.hypot(e.x-bot.x,e.y-bot.y); if(d<nd){nd=d;nearest=e;} });
+        const w = WEP[bot.currentWeapon]||WEP.pistol;
+        if (nearest && nd < w.range*0.9) {
+          const a = Math.atan2(nearest.y-bot.y,nearest.x-bot.x);
+          bot.vx=Math.cos(a)*PLYR_SPD*0.7; bot.vy=Math.sin(a)*PLYR_SPD*0.7;
+          bot.aimAngle=a;
+          if (now-bot.lastShot > w.rate*1.5) {
+            bot.lastShot=now;
+            const spread=(Math.random()-0.5)*0.3;
+            const bullet={id:bot.id+'_b_'+now,ownerId:bot.id,ownerName:bot.username,x:bot.x,y:bot.y,vx:Math.cos(a+spread)*BULL_SPD,vy:Math.sin(a+spread)*BULL_SPD,dmg:w.dmg*0.7,range:w.range,weapon:bot.currentWeapon,col:w.col,traveled:0};
+            gs.bullets.push(bullet);
+            channelRef.current?.send({ type:'broadcast', event:'bullet', payload:bullet });
+          }
+        } else if (bot.moveTimer<=0) {
+          const a=Math.random()*Math.PI*2; bot._vx=Math.cos(a)*PLYR_SPD*0.5; bot._vy=Math.sin(a)*PLYR_SPD*0.5;
+          bot.moveTimer=1500+Math.random()*2000;
+        }
+        if (!nearest||nd>=w.range){bot.vx=bot._vx||0;bot.vy=bot._vy||0;}
+        const dc=Math.hypot(bot.x-gs.storm.x,bot.y-gs.storm.y);
+        if(dc>gs.storm.radius*0.85){const a=Math.atan2(gs.storm.y-bot.y,gs.storm.x-bot.x);bot.vx=Math.cos(a)*PLYR_SPD;bot.vy=Math.sin(a)*PLYR_SPD;}
+        bot.x=Math.max(PLYR_SZ,Math.min(MAP_SZ-PLYR_SZ,bot.x+(bot.vx||0)));
+        bot.y=Math.max(PLYR_SZ,Math.min(MAP_SZ-PLYR_SZ,bot.y+(bot.vy||0)));
+        if(dc>gs.storm.radius){bot.health-=0.3;if(bot.health<=0){bot.dead=true;channelRef.current?.send({type:'broadcast',event:'player_died',payload:{id:bot.id,username:bot.username,killedBy:'Storm',placement:0}});}}
+      }
+
+      function applyLoot(me, item) {
+        if (item.type==='weapon'&&item.weapon&&!me.weapons.includes(item.weapon)) me.weapons.push(item.weapon);
+        else if(item.type==='ammo') me.ammo=Math.min(999,me.ammo+item.value);
+        else if(item.type==='materials') me.materials=Math.min(999,me.materials+item.value);
+        else if(item.type==='health') me.health=Math.min(100,me.health+item.value);
+      }
+
+      function diePlayer(killedBy) {
+        const gs = stateRef.current;
+        if (!gs || gs.me.dead) return;
+        gs.me.dead = true;
+        const placement = gs.alive;
+        setDeathInfo({ placement, kills: gs.me.kills, killedBy });
+        setPhase('dead');
+        channelRef.current?.send({ type:'broadcast', event:'player_died', payload:{ id:myIdRef.current, username:playerData.username, killedBy, placement }});
+      }
+
+      function endMatch(won=false) {
+        const gs = stateRef.current;
+        if (!gs) return;
+        setTimeout(() => onEnd({ placement: won?1:gs.alive, kills:gs.me.kills, coinsEarned:gs.me.kills*50+(won?250:0), xpEarned:gs.me.kills*25+(won?120:15) }), 1000);
+      }
+
+      function handleTriviaAnswer(idx) {
+        if (!triviaPopup) return;
+        const correct = idx === triviaPopup.q.c;
+        if (correct) {
+          const me = stateRef.current?.me;
+          if (me) {
+            const rewards = [
+              ()=>{me.shield=Math.min(100,me.shield+50);return'Shield +50 🛡️';},
+              ()=>{me.health=Math.min(100,me.health+50);return'Health +50 💖';},
+              ()=>{me.ammo+=30;return'Ammo +30 📦';},
+              ()=>{me.materials+=50;return'Materials +50 🧱';},
+              ()=>{me.speedBoost=1.5;me.speedTimer=8000;return'Speed Boost ⚡';},
+            ];
+            const msg = rewards[Math.floor(Math.random()*rewards.length)]();
+            showNotif(msg+' — Correct!','🧠','#10b981');
+          }
+        } else { showNotif('Wrong answer!','❌','#ef4444'); }
+        triviaRef.current = null;
+        setTriviaPopup(null);
+      }
+
+      // ── Canvas render ────────────────────────────────────────────────────────
       useEffect(() => {
         if (phase !== 'active' && phase !== 'dead') return;
         const canvas = canvasRef.current;
         if (!canvas) return;
         const ctx = canvas.getContext('2d');
 
-        const SKINS_MAP = {
-          default:'#8b5cf6', bubblegum:'#ec4899', mint:'#10b981', ocean:'#0ea5e9',
-          sunset:'#f97316', golden:'#eab308', galaxy:'#6366f1', cherry:'#ef4444', pug_taco:'#d97706'
-        };
-        const SKIN_EMOJI = {
-          default:'😎', bubblegum:'🍬', mint:'🌿', ocean:'🌊',
-          sunset:'🌅', golden:'⭐', galaxy:'🌌', cherry:'🍒', pug_taco:'🌮'
-        };
-        const WEAPON_COLORS = {
-          pistol:'#a78bfa', shotgun:'#f472b6', rifle:'#60a5fa', sniper:'#34d399',
-          smg:'#f59e0b', rocket:'#ef4444', laser:'#06b6d4', grenade:'#84cc16',
-          crossbow:'#8b5cf6', minigun:'#fb923c'
-        };
-
         const render = () => {
-          const gs = gameStateRef.current;
-          if (!gs) { renderRef.current = requestAnimationFrame(render); return; }
-
-          const me = gs.players[myIdRef.current];
-          const camX = me ? me.x - canvas.width/2  : MAP_SIZE/2 - canvas.width/2;
-          const camY = me ? me.y - canvas.height/2 : MAP_SIZE/2 - canvas.height/2;
+          const gs = stateRef.current;
+          if (!gs) { renderRef.current=requestAnimationFrame(render); return; }
+          const me = gs.me;
+          const camX = me.x - canvas.width/2;
+          const camY = me.y - canvas.height/2;
 
           // Background
           const bg = ctx.createLinearGradient(0,0,canvas.width,canvas.height);
           bg.addColorStop(0,'#1e293b'); bg.addColorStop(1,'#0f172a');
-          ctx.fillStyle = bg; ctx.fillRect(0,0,canvas.width,canvas.height);
+          ctx.fillStyle=bg; ctx.fillRect(0,0,canvas.width,canvas.height);
 
           // Grid
-          ctx.strokeStyle = 'rgba(139,92,246,0.08)'; ctx.lineWidth = 1;
-          const gs2 = 100;
-          for (let x=(-camX%gs2);x<canvas.width;x+=gs2){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
-          for (let y=(-camY%gs2);y<canvas.height;y+=gs2){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
+          ctx.strokeStyle='rgba(139,92,246,0.08)'; ctx.lineWidth=1;
+          const gs2=100;
+          for(let x=(-camX%gs2);x<canvas.width;x+=gs2){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,canvas.height);ctx.stroke();}
+          for(let y=(-camY%gs2);y<canvas.height;y+=gs2){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(canvas.width,y);ctx.stroke();}
 
           // Storm
           ctx.save();
-          ctx.beginPath();
-          ctx.rect(0,0,canvas.width,canvas.height);
-          ctx.arc(gs.storm.x-camX, gs.storm.y-camY, gs.storm.radius, 0, Math.PI*2, true);
-          ctx.fillStyle = 'rgba(139,92,246,0.38)'; ctx.fill();
-          ctx.restore();
+          ctx.beginPath(); ctx.rect(0,0,canvas.width,canvas.height);
+          ctx.arc(gs.storm.x-camX,gs.storm.y-camY,gs.storm.radius,0,Math.PI*2,true);
+          ctx.fillStyle='rgba(139,92,246,0.38)'; ctx.fill(); ctx.restore();
           ctx.strokeStyle='#a78bfa'; ctx.lineWidth=4; ctx.setLineDash([20,10]);
           ctx.beginPath(); ctx.arc(gs.storm.x-camX,gs.storm.y-camY,gs.storm.radius,0,Math.PI*2); ctx.stroke();
           ctx.setLineDash([]);
 
           // Trivia stations
-          gs.stations?.forEach(st => {
-            const sx=st.x-camX, sy=st.y-camY;
+          gs.stations.forEach(st => {
+            const sx=st.x-camX,sy=st.y-camY;
             if(sx<-100||sx>canvas.width+100||sy<-100||sy>canvas.height+100) return;
             const glow=ctx.createRadialGradient(sx,sy,0,sx,sy,st.radius+20);
             glow.addColorStop(0,st.used?'rgba(80,80,80,0.3)':'rgba(236,72,153,0.35)'); glow.addColorStop(1,'transparent');
@@ -1394,235 +2054,182 @@
             ctx.strokeStyle=st.used?'#555':'#ec4899'; ctx.lineWidth=4; ctx.stroke();
             ctx.fillStyle='#fff'; ctx.font='bold 26px Arial'; ctx.textAlign='center';
             ctx.fillText(st.used?'✓':'🧠',sx,sy+9);
+            if(!st.used && Math.hypot(me.x-st.x,me.y-st.y)<st.radius+PLYR_SZ){
+              ctx.fillStyle='#ec4899'; ctx.font='bold 12px Arial'; ctx.fillText('Press E',sx,sy-st.radius-8);
+            }
           });
 
           // Loot
-          const LOOT_COLORS = { weapon:'#fbbf24', ammo:'#a78bfa', materials:'#fb923c', health:'#f472b6' };
-          const LOOT_ICONS  = { ammo:'📦', materials:'🧱', health:'💖' };
-          const WEAPON_ICONS= { pistol:'🔫',shotgun:'💥',rifle:'🎯',sniper:'🔭',smg:'🌀',rocket:'🚀',laser:'🔆',grenade:'💣',crossbow:'🏹',minigun:'⚙️' };
-          gs.loot?.forEach(item => {
-            const lx=item.x-camX, ly=item.y-camY;
+          const LOOT_COL={weapon:'#fbbf24',ammo:'#a78bfa',materials:'#fb923c',health:'#f472b6'};
+          gs.loot.forEach(item => {
+            const lx=item.x-camX,ly=item.y-camY;
             if(lx<-30||lx>canvas.width+30||ly<-30||ly>canvas.height+30) return;
-            const col = LOOT_COLORS[item.type]||'#fff';
+            const col=LOOT_COL[item.type]||'#fff';
             ctx.shadowColor=col; ctx.shadowBlur=14;
             ctx.beginPath(); ctx.arc(lx,ly,17,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
             ctx.shadowBlur=0; ctx.fillStyle='#fff'; ctx.font='13px Arial'; ctx.textAlign='center';
-            ctx.fillText(item.type==='weapon'?(WEAPON_ICONS[item.weapon]||'🔫'):LOOT_ICONS[item.type]||'?',lx,ly+5);
+            ctx.fillText(item.type==='weapon'?(WEP[item.weapon]?.icon||'🔫'):{ammo:'📦',materials:'🧱',health:'💖'}[item.type]||'?',lx,ly+5);
           });
 
           // Buildings
-          gs.buildings?.forEach(bld => {
+          gs.buildings.forEach(bld=>{
             ctx.save(); ctx.translate(bld.x-camX,bld.y-camY); ctx.rotate(bld.angle);
             ctx.fillStyle=`rgba(251,146,60,${0.4+(bld.health/120)*0.6})`; ctx.shadowColor='#fb923c'; ctx.shadowBlur=8;
-            ctx.fillRect(-bld.w/2,-bld.h/2,bld.w,bld.h);
-            ctx.shadowBlur=0; ctx.strokeStyle='#fed7aa'; ctx.lineWidth=2;
-            ctx.strokeRect(-bld.w/2,-bld.h/2,bld.w,bld.h);
+            ctx.fillRect(-bld.w/2,-bld.h/2,bld.w,bld.h); ctx.shadowBlur=0;
+            ctx.strokeStyle='#fed7aa'; ctx.lineWidth=2; ctx.strokeRect(-bld.w/2,-bld.h/2,bld.w,bld.h);
             ctx.restore();
           });
 
-          // All players & bots
-          const allToRender = [
+          // Draw all entities
+          const toDraw = [
             ...Object.values(gs.players),
-            ...Object.values(gs.bots||{}),
+            ...Object.values(gs.bots),
           ];
-
-          allToRender.forEach(p => {
-            if (p.dead) return;
-            const px=p.x-camX, py=p.y-camY;
+          toDraw.forEach(p => {
+            if(p.dead) return;
+            const px=p.x-camX,py=p.y-camY;
             if(px<-60||px>canvas.width+60||py<-60||py>canvas.height+60) return;
-
-            const isMe = p.id === myIdRef.current;
-            const col  = SKINS_MAP[p.skin] || (p.isBot ? '#ef4444' : '#8b5cf6');
-            const emoji= p.isBot ? '😈' : (SKIN_EMOJI[p.skin] || '😎');
-
-            // Aim line for self
-            if (isMe) {
-              ctx.strokeStyle='rgba(255,255,255,0.35)'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
-              ctx.beginPath(); ctx.moveTo(px,py);
-              ctx.lineTo(px+Math.cos(p.aimAngle||0)*65, py+Math.sin(p.aimAngle||0)*65);
-              ctx.stroke(); ctx.setLineDash([]);
-            }
-
-            ctx.shadowColor=col; ctx.shadowBlur=isMe?22:14;
-            ctx.beginPath(); ctx.arc(px,py,30,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
-            ctx.shadowBlur=0;
-            ctx.strokeStyle=isMe?'#fff':'rgba(255,255,255,0.7)'; ctx.lineWidth=isMe?4:2.5; ctx.stroke();
-
-            ctx.fillStyle='#fff'; ctx.font='17px Arial'; ctx.textAlign='center';
-            ctx.fillText(emoji,px,py+6);
-
-            // Emote bubble
-            const emoteEmoji = emotes[p.id];
-            if (emoteEmoji) {
-              ctx.font='30px Arial'; ctx.fillText(emoteEmoji, px, py-52);
-            }
-
-            // Name tag
-            ctx.font=`bold ${isMe?12:11}px Arial`; ctx.textAlign='center';
-            ctx.fillStyle=isMe?'#c4b5fd':'rgba(255,255,255,0.75)';
-            ctx.fillText(p.username, px, py-37);
-
-            // Health bar
+            const col=SKIN_COLORS[p.skin]||(p.isBot?'#ef4444':'#8b5cf6');
+            const emoji=p.isBot?'😈':(SKIN_EMOJI[p.skin]||'😎');
+            ctx.shadowColor=col; ctx.shadowBlur=14;
+            ctx.beginPath(); ctx.arc(px,py,PLYR_SZ,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+            ctx.shadowBlur=0; ctx.strokeStyle='rgba(255,255,255,0.7)'; ctx.lineWidth=2.5; ctx.stroke();
+            ctx.fillStyle='#fff'; ctx.font='17px Arial'; ctx.textAlign='center'; ctx.fillText(emoji,px,py+6);
+            const emoteEmoji=emoteMapRef.current[p.id];
+            if(emoteEmoji){ctx.font='28px Arial';ctx.fillText(emoteEmoji,px,py-52);}
+            ctx.font='bold 11px Arial'; ctx.fillStyle='rgba(255,255,255,0.75)'; ctx.fillText(p.username,px,py-37);
             ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillRect(px-26,py-33,52,7);
             ctx.fillStyle=p.health>50?'#10b981':p.health>25?'#fbbf24':'#ef4444';
-            ctx.fillRect(px-26,py-33,52*(p.health/100),7);
+            ctx.fillRect(px-26,py-33,52*(Math.max(0,p.health)/100),7);
           });
 
+          // Draw self
+          if (!me.dead) {
+            const px=me.x-camX, py=me.y-camY;
+            const col=SKIN_COLORS[playerData.selectedSkin]||'#8b5cf6';
+            const emoji=SKIN_EMOJI[playerData.selectedSkin]||'😎';
+            ctx.strokeStyle='rgba(255,255,255,0.35)'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+            ctx.beginPath(); ctx.moveTo(px,py); ctx.lineTo(px+Math.cos(me.aimAngle)*65,py+Math.sin(me.aimAngle)*65); ctx.stroke(); ctx.setLineDash([]);
+            ctx.shadowColor=col; ctx.shadowBlur=22;
+            ctx.beginPath(); ctx.arc(px,py,PLYR_SZ,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
+            ctx.shadowBlur=0; ctx.strokeStyle='#fff'; ctx.lineWidth=4; ctx.stroke();
+            ctx.fillStyle='#fff'; ctx.font='18px Arial'; ctx.textAlign='center'; ctx.fillText(emoji,px,py+6);
+            if(aimbotMode){ctx.strokeStyle='#fbbf24';ctx.lineWidth=2;ctx.setLineDash([3,3]);ctx.beginPath();ctx.arc(px,py,PLYR_SZ+8,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);}
+          }
+
           // Bullets
-          gs.bullets?.forEach(b => {
-            const col = WEAPON_COLORS[b.weapon]||'#a78bfa';
+          gs.bullets.forEach(b=>{
+            const col=WEP[b.weapon]?.col||'#a78bfa';
             ctx.shadowColor=col; ctx.shadowBlur=10;
             ctx.beginPath(); ctx.arc(b.x-camX,b.y-camY,5,0,Math.PI*2); ctx.fillStyle=col; ctx.fill();
             ctx.shadowBlur=0;
           });
 
-          renderRef.current = requestAnimationFrame(render);
+          renderRef.current=requestAnimationFrame(render);
         };
+        renderRef.current=requestAnimationFrame(render);
+        return ()=>cancelAnimationFrame(renderRef.current);
+      }, [phase]);
 
-        renderRef.current = requestAnimationFrame(render);
-        return () => cancelAnimationFrame(renderRef.current);
-      }, [phase, emotes]);
-
-      // ── Keyboard/Mouse ────────────────────────────────────────────────────
+      // ── Controls ─────────────────────────────────────────────────────────────
       useEffect(() => {
         const canvas = canvasRef.current;
-        const onKD = (e) => {
-          keysRef.current[e.key.toLowerCase()] = true;
-          if (e.key.toLowerCase()==='t') {
-            const EMOTES = ['👋','💃','😂','💪','🎮','🧠'];
-            const emoji  = EMOTES[Math.floor(Math.random()*EMOTES.length)];
-            socketRef.current?.emit('emote', { emoji });
+        const onKD=(e)=>{
+          keysRef.current[e.key.toLowerCase()]=true;
+          if(e.key.toLowerCase()==='t'){
+            const em=['👋','💃','😂','💪','🎮','🔥'][Math.floor(Math.random()*6)];
+            channelRef.current?.send({type:'broadcast',event:'emote',payload:{id:myIdRef.current,emoji:em}});
           }
-          // 1-4 weapon quick select
-          const wepKeys = { '1':0,'2':1,'3':2,'4':3 };
-          if (wepKeys[e.key] !== undefined && gameStateRef.current) {
-            const me = gameStateRef.current.players[myIdRef.current];
-            if (me && me.weapons[wepKeys[e.key]]) {
-              socketRef.current?.emit('switchWeapon', { weapon: me.weapons[wepKeys[e.key]] });
-            }
+          const wk={'1':0,'2':1,'3':2,'4':3};
+          if(wk[e.key]!==undefined){
+            const me=stateRef.current?.me;
+            if(me&&me.weapons[wk[e.key]]) me.currentWeapon=me.weapons[wk[e.key]];
           }
         };
-        const onKU = (e) => { keysRef.current[e.key.toLowerCase()] = false; };
-        const onMM = (e) => {
-          if (!canvas) return;
-          const rect = canvas.getBoundingClientRect();
-          mouseRef.current.x = e.clientX - rect.left;
-          mouseRef.current.y = e.clientY - rect.top;
-          mouseRef.current.angle = Math.atan2(e.clientY - rect.top - canvas.height/2, e.clientX - rect.left - canvas.width/2);
+        const onKU=(e)=>{keysRef.current[e.key.toLowerCase()]=false;};
+        const onMM=(e)=>{
+          if(!canvas) return;
+          const r=canvas.getBoundingClientRect();
+          mouseRef.current.x=e.clientX-r.left; mouseRef.current.y=e.clientY-r.top;
+          mouseRef.current.angle=Math.atan2(e.clientY-r.top-canvas.height/2,e.clientX-r.left-canvas.width/2);
         };
-        const onMD = () => { mouseRef.current.down = true; };
-        const onMU = () => { mouseRef.current.down = false; };
-        const onWH = (e) => {
-          const me = gameStateRef.current?.players[myIdRef.current];
-          if (!me || me.weapons.length < 2) return;
-          const idx = me.weapons.indexOf(me.currentWeapon);
-          const next = me.weapons[(idx + (e.deltaY>0?1:-1) + me.weapons.length) % me.weapons.length];
-          socketRef.current?.emit('switchWeapon', { weapon: next });
+        const onMD=()=>{mouseRef.current.down=true;};
+        const onMU=()=>{mouseRef.current.down=false;};
+        const onWH=(e)=>{
+          const me=stateRef.current?.me;
+          if(!me||me.weapons.length<2) return;
+          const idx=me.weapons.indexOf(me.currentWeapon);
+          me.currentWeapon=me.weapons[(idx+(e.deltaY>0?1:-1)+me.weapons.length)%me.weapons.length];
         };
-        const onBLD = (e) => {
-          if (e.key.toLowerCase()==='b') {
-            socketRef.current?.emit('build', { angle: mouseRef.current.angle });
-          }
-        };
-
-        window.addEventListener('keydown', onKD);
-        window.addEventListener('keydown', onBLD);
-        window.addEventListener('keyup', onKU);
-        canvas?.addEventListener('mousemove', onMM);
-        canvas?.addEventListener('mousedown', onMD);
-        canvas?.addEventListener('mouseup', onMU);
-        canvas?.addEventListener('wheel', onWH);
-        return () => {
-          window.removeEventListener('keydown', onKD);
-          window.removeEventListener('keydown', onBLD);
-          window.removeEventListener('keyup', onKU);
-          canvas?.removeEventListener('mousemove', onMM);
-          canvas?.removeEventListener('mousedown', onMD);
-          canvas?.removeEventListener('mouseup', onMU);
-          canvas?.removeEventListener('wheel', onWH);
+        window.addEventListener('keydown',onKD); window.addEventListener('keyup',onKU);
+        canvas?.addEventListener('mousemove',onMM); canvas?.addEventListener('mousedown',onMD);
+        canvas?.addEventListener('mouseup',onMU); canvas?.addEventListener('wheel',onWH);
+        return()=>{
+          window.removeEventListener('keydown',onKD); window.removeEventListener('keyup',onKU);
+          canvas?.removeEventListener('mousemove',onMM); canvas?.removeEventListener('mousedown',onMD);
+          canvas?.removeEventListener('mouseup',onMU); canvas?.removeEventListener('wheel',onWH);
         };
       }, [phase]);
 
-      const handleTriviaAnswer = (idx) => {
-        if (!triviaPopup) return;
-        socketRef.current?.emit('triviaAnswer', { stationId: triviaPopup.stationId, answerIndex: idx, question: triviaPopup.question });
-        setTriviaPopup(null);
-      };
+      const formatTime=(s)=>`${Math.floor(s/60)}:${String(Math.round(s)%60).padStart(2,'0')}`;
 
-      const formatTime = (s) => `${Math.floor(s/60)}:${String(Math.round(s)%60).padStart(2,'0')}`;
-      const WEAPON_ICONS2 = { pistol:'🔫',shotgun:'💥',rifle:'🎯',sniper:'🔭',smg:'🌀',rocket:'🚀',laser:'🔆',grenade:'💣',crossbow:'🏹',minigun:'⚙️' };
-
-      // ── Screens ───────────────────────────────────────────────────────────
-      if (phase === 'connecting') return (
+      // ── Screens ───────────────────────────────────────────────────────────────
+      if(phase==='joining') return (
         <div style={styles.gameWrapper}>
-          <div style={{ color:'#fff', textAlign:'center' }}>
-            <div style={{ fontSize:'3rem', animation:'spin 1s linear infinite', display:'inline-block', marginBottom:'16px' }}>🧠</div>
-            <div style={{ fontSize:'1.3rem', fontWeight:700 }}>Connecting to server...</div>
-            <div style={{ color:'#a5b4fc', marginTop:'8px', fontSize:'0.9rem' }}>{SERVER_URL}</div>
+          <div style={{color:'#fff',textAlign:'center'}}>
+            <div style={{fontSize:'3rem',animation:'spin 1s linear infinite',display:'inline-block',marginBottom:'16px'}}>🎮</div>
+            <div style={{fontSize:'1.3rem',fontWeight:700}}>Joining game...</div>
+            <div style={{color:'#a5b4fc',marginTop:'8px',fontSize:'0.9rem'}}>Connecting to Pixel Zone</div>
           </div>
         </div>
       );
 
-      if (phase === 'error') return (
+      if(phase==='error') return (
         <div style={styles.gameWrapper}>
-          <div style={{ color:'#f87171', textAlign:'center', maxWidth:'400px', padding:'20px' }}>
-            <div style={{ fontSize:'3rem', marginBottom:'16px' }}>❌</div>
-            <div style={{ fontSize:'1.3rem', fontWeight:700, marginBottom:'8px' }}>Can't reach game server</div>
-            <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginBottom:'20px' }}>Make sure your server is running at:<br/><code style={{color:'#c4b5fd'}}>{SERVER_URL}</code></div>
-            <button onClick={() => window.location.reload()} style={{ padding:'12px 28px', background:'#8b5cf6', border:'none', borderRadius:'15px', color:'#fff', fontFamily:'inherit', fontWeight:700, cursor:'pointer', fontSize:'1rem' }}>Retry</button>
+          <div style={{color:'#f87171',textAlign:'center',maxWidth:'400px',padding:'20px'}}>
+            <div style={{fontSize:'3rem',marginBottom:'16px'}}>❌</div>
+            <div style={{fontSize:'1.3rem',fontWeight:700,marginBottom:'8px'}}>Connection failed</div>
+            <div style={{color:'#a5b4fc',fontSize:'0.9rem',marginBottom:'20px'}}>Check your Supabase project is active</div>
+            <button onClick={()=>window.location.reload()} style={{padding:'12px 28px',background:'#8b5cf6',border:'none',borderRadius:'15px',color:'#fff',fontFamily:'inherit',fontWeight:700,cursor:'pointer',fontSize:'1rem'}}>Retry</button>
           </div>
         </div>
       );
 
-      if (phase === 'waiting' || phase === 'countdown') return (
-        <div style={{ minHeight:'100vh', background:'linear-gradient(135deg,#1e1b4b,#312e81)', display:'flex', alignItems:'center', justifyContent:'center', position:'relative' }}>
+      if(phase==='waiting'||phase==='countdown') return (
+        <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#1e1b4b,#312e81)',display:'flex',alignItems:'center',justifyContent:'center',position:'relative'}}>
           <FloatingShapes colors={['#8b5cf6','#a78bfa','#c4b5fd']} />
-          <div style={{ position:'relative', zIndex:1, textAlign:'center', maxWidth:'500px', width:'90%' }}>
-            <div style={{ fontSize:'3rem', marginBottom:'12px', animation:'bounce 1.5s infinite' }}>🧠</div>
-            <h2 style={{ color:'#fff', fontSize:'1.8rem', fontWeight:800, marginBottom:'6px' }}>
-              {phase==='countdown' ? 'Get Ready!' : 'Waiting for Players'}
-            </h2>
-            <div style={{ color:'#a5b4fc', fontSize:'0.9rem', marginBottom:'30px' }}>Room: <span style={{ color:'#c4b5fd', fontWeight:700 }}>{roomId}</span></div>
-
-            {phase === 'countdown' && (
-              <div style={{ fontSize:'5rem', fontWeight:900, color:'#fbbf24', textShadow:'0 0 40px rgba(251,191,36,0.7)', marginBottom:'20px', animation:'bounce 1s infinite' }}>
-                {countdown}
-              </div>
-            )}
-
-            <div style={{ background:'rgba(255,255,255,0.06)', borderRadius:'20px', padding:'20px', marginBottom:'20px' }}>
-              <div style={{ color:'#a5b4fc', fontSize:'0.85rem', marginBottom:'12px' }}>Players in lobby ({waitingPlayers.length})</div>
-              <div style={{ display:'flex', flexWrap:'wrap', gap:'8px', justifyContent:'center' }}>
-                {waitingPlayers.map(p => (
-                  <div key={p.id} style={{ background: p.id===myIdRef.current?'rgba(139,92,246,0.3)':'rgba(255,255,255,0.08)', border:`1px solid ${p.id===myIdRef.current?'#8b5cf6':'rgba(255,255,255,0.1)'}`, borderRadius:'20px', padding:'6px 14px', color:'#fff', fontSize:'0.85rem', fontWeight: p.id===myIdRef.current?700:400 }}>
-                    {p.id===myIdRef.current?'👤 ':''}{ p.username}
-                  </div>
+          <div style={{position:'relative',zIndex:1,textAlign:'center',maxWidth:'500px',width:'90%'}}>
+            <div style={{fontSize:'3rem',marginBottom:'12px',animation:'bounce 1.5s infinite'}}>🎮</div>
+            <h2 style={{color:'#fff',fontSize:'1.8rem',fontWeight:800,marginBottom:'6px'}}>{phase==='countdown'?'Get Ready!':'Waiting for Players...'}</h2>
+            <div style={{color:'#a5b4fc',fontSize:'0.9rem',marginBottom:'30px'}}>Room: <span style={{color:'#c4b5fd',fontWeight:700}}>{roomId}</span></div>
+            {phase==='countdown'&&<div style={{fontSize:'5rem',fontWeight:900,color:'#fbbf24',textShadow:'0 0 40px rgba(251,191,36,0.7)',marginBottom:'20px',animation:'bounce 1s infinite'}}>{countdown}</div>}
+            <div style={{background:'rgba(255,255,255,0.06)',borderRadius:'20px',padding:'20px',marginBottom:'20px'}}>
+              <div style={{color:'#a5b4fc',fontSize:'0.85rem',marginBottom:'12px'}}>Players in lobby ({waitPlayers.length + 1})</div>
+              <div style={{display:'flex',flexWrap:'wrap',gap:'8px',justifyContent:'center'}}>
+                <div style={{background:'rgba(139,92,246,0.3)',border:'1px solid #8b5cf6',borderRadius:'20px',padding:'6px 14px',color:'#fff',fontSize:'0.85rem',fontWeight:700}}>👤 {playerData.username} (you)</div>
+                {waitPlayers.filter(p=>p.id!==myIdRef.current).map(p=>(
+                  <div key={p.id} style={{background:'rgba(255,255,255,0.08)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:'20px',padding:'6px 14px',color:'#fff',fontSize:'0.85rem'}}>{p.username}</div>
                 ))}
               </div>
             </div>
-
-            {phase==='waiting' && <div style={{ color:'rgba(255,255,255,0.4)', fontSize:'0.85rem' }}>Game starts when 2+ players join...</div>}
+            {phase==='waiting'&&<div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.85rem'}}>Game starts automatically when players join...</div>}
           </div>
         </div>
       );
 
-      // ── Active game (& dead spectate) ─────────────────────────────────────
       return (
         <div style={styles.gameWrapper}>
-          <canvas ref={canvasRef} width={900} height={650} style={{ ...styles.gameCanvas, opacity: phase==='dead'?0.6:1, cursor:'crosshair' }} />
+          <canvas ref={canvasRef} width={900} height={650} style={{...styles.gameCanvas,opacity:phase==='dead'?0.6:1,cursor:'crosshair'}} />
 
-          {/* Top HUD */}
           <div style={styles.gameHudTop}>
             <div style={styles.hudPill}><span style={styles.hudIcon}>👥</span><span style={styles.hudValue}>{hud.alive}</span><span style={styles.hudLabel}>alive</span></div>
             <div style={styles.hudTimer}>
               <span style={styles.timerIcon}>⏱️</span>
-              <span style={{ ...styles.timerValue, color:hud.timeLeft<=30?'#ef4444':hud.timeLeft<=60?'#fbbf24':'#fff' }}>{formatTime(hud.timeLeft)}</span>
+              <span style={{...styles.timerValue,color:hud.timeLeft<=30?'#ef4444':hud.timeLeft<=60?'#fbbf24':'#fff'}}>{formatTime(hud.timeLeft)}</span>
             </div>
             <div style={styles.hudPill}><span style={styles.hudIcon}>💀</span><span style={styles.hudValue}>{hud.kills}</span><span style={styles.hudLabel}>kills</span></div>
-            <div style={{ ...styles.hudPill, fontSize:'0.75rem' }}><span style={{ color: pingMs<60?'#10b981':pingMs<120?'#fbbf24':'#ef4444' }}>●</span><span style={{ color:'#a5b4fc', marginLeft:'4px' }}>{pingMs}ms</span></div>
           </div>
 
-          {/* Bottom HUD */}
           <div style={styles.gameHudBottom}>
             <div style={styles.healthShieldBox}>
               <div style={styles.barRow}><span style={styles.barIcon}>💖</span><div style={styles.healthBarBg}><div style={{...styles.healthBarFill,width:`${hud.health}%`}}/></div><span style={styles.barNum}>{hud.health}</span></div>
@@ -1632,57 +2239,49 @@
               <div style={styles.resourceItem}><span>📦</span><span>{hud.ammo}</span></div>
               <div style={styles.resourceItem}><span>🧱</span><span>{hud.materials}</span></div>
             </div>
-            {/* Weapon slots */}
-            <div style={{ display:'flex', gap:'8px' }}>
-              {hud.weapons.map(w => (
-                <div key={w} style={{ ...styles.weaponBox, borderColor: w===hud.weapon?'#a78bfa':'rgba(255,255,255,0.2)', opacity:w===hud.weapon?1:0.5, transform:w===hud.weapon?'scale(1.05)':'scale(1)', transition:'all 0.15s' }}>
-                  <span style={styles.weaponIcon}>{WEAPON_ICONS2[w]||'🔫'}</span>
+            <div style={{display:'flex',gap:'8px'}}>
+              {hud.weapons.map(w=>(
+                <div key={w} style={{...styles.weaponBox,borderColor:w===hud.weapon?WEP[w]?.col:'rgba(255,255,255,0.2)',opacity:w===hud.weapon?1:0.5,transform:w===hud.weapon?'scale(1.05)':'scale(1)',transition:'all 0.15s'}}>
+                  <span style={styles.weaponIcon}>{WEP[w]?.icon||'🔫'}</span>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Dead overlay */}
-          {phase === 'dead' && deathInfo && (
-            <div style={{ position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', background:'rgba(0,0,0,0.85)', backdropFilter:'blur(10px)', borderRadius:'25px', padding:'35px 45px', textAlign:'center', border:'3px solid #ef4444', zIndex:200 }}>
-              <div style={{ fontSize:'3rem', marginBottom:'12px' }}>💀</div>
-              <h2 style={{ color:'#f87171', fontSize:'1.8rem', fontWeight:800, margin:'0 0 8px' }}>Eliminated!</h2>
-              <div style={{ color:'#a5b4fc', marginBottom:'6px' }}>Killed by <span style={{ color:'#fff', fontWeight:700 }}>{deathInfo.killedBy}</span></div>
-              <div style={{ color:'#a5b4fc', marginBottom:'20px' }}>#{deathInfo.placement} place · {deathInfo.kills} kills</div>
-              <div style={{ color:'rgba(255,255,255,0.4)', fontSize:'0.85rem' }}>Spectating until match ends...</div>
+          {phase==='dead'&&deathInfo&&(
+            <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',background:'rgba(0,0,0,0.85)',backdropFilter:'blur(10px)',borderRadius:'25px',padding:'35px 45px',textAlign:'center',border:'3px solid #ef4444',zIndex:200}}>
+              <div style={{fontSize:'3rem',marginBottom:'12px'}}>💀</div>
+              <h2 style={{color:'#f87171',fontSize:'1.8rem',fontWeight:800,margin:'0 0 8px'}}>Eliminated!</h2>
+              <div style={{color:'#a5b4fc',marginBottom:'6px'}}>Killed by <span style={{color:'#fff',fontWeight:700}}>{deathInfo.killedBy}</span></div>
+              <div style={{color:'#a5b4fc',marginBottom:'20px'}}>#{deathInfo.placement} place · {deathInfo.kills} kills</div>
+              <div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.85rem'}}>Spectating until match ends...</div>
             </div>
           )}
 
-          {/* Notification */}
-          {notification && (
-            <div style={{ ...styles.gameNotification, borderColor:notification.color }}>
-              <span style={styles.notifIcon}>{notification.icon}</span>
-              <span style={{ color:notification.color }}>{notification.text}</span>
+          {notif&&(
+            <div style={{...styles.gameNotification,borderColor:notif.color}}>
+              <span style={styles.notifIcon}>{notif.icon}</span>
+              <span style={{color:notif.color}}>{notif.text}</span>
             </div>
           )}
 
-          {/* Trivia */}
-          {triviaPopup && (
+          {triviaPopup&&(
             <div style={styles.triviaOverlay}>
               <div style={styles.triviaModal}>
-                <div style={styles.triviaHeader}><span style={styles.triviaBrain}>🧠</span><span>Brain Challenge!</span></div>
-                <div style={styles.triviaQuestion}>{triviaPopup.question.q}</div>
+                <div style={styles.triviaHeader}><span style={styles.triviaBrain}>🧠</span><span>Quick Challenge!</span></div>
+                <div style={styles.triviaQuestion}>{triviaPopup.q.q}</div>
                 <div style={styles.triviaGrid}>
-                  {triviaPopup.question.a.map((ans,i) => (
-                    <button key={i} style={{ ...styles.triviaBtn, background:['linear-gradient(135deg,#ef4444,#dc2626)','linear-gradient(135deg,#3b82f6,#2563eb)','linear-gradient(135deg,#eab308,#ca8a04)','linear-gradient(135deg,#22c55e,#16a34a)'][i] }} onClick={()=>handleTriviaAnswer(i)}>
-                      {ans}
-                    </button>
+                  {triviaPopup.q.a.map((ans,i)=>(
+                    <button key={i} style={{...styles.triviaBtn,background:['linear-gradient(135deg,#ef4444,#dc2626)','linear-gradient(135deg,#3b82f6,#2563eb)','linear-gradient(135deg,#eab308,#ca8a04)','linear-gradient(135deg,#22c55e,#16a34a)'][i]}} onClick={()=>handleTriviaAnswer(i)}>{ans}</button>
                   ))}
                 </div>
               </div>
             </div>
           )}
-
           <div style={styles.controlsHint}>WASD Move • Click Shoot • B Build • E Interact • T Emote • 1-4 Weapons</div>
         </div>
       );
     }
-
     function Results({ result, onPlayAgain, onMenu, testMode }) {
       const isWin = result.placement === 1;
       return (
@@ -1691,7 +2290,7 @@
           {testMode && <div style={{ position:'absolute', top:'15px', left:'50%', transform:'translateX(-50%)', background:'rgba(239,68,68,0.3)', border:'2px solid #ef4444', borderRadius:'15px', padding:'8px 20px', color:'#f87171', fontSize:'0.85rem', fontWeight:700, zIndex:10 }}>🧪 Test Mode — coins/XP not saved</div>}
           <div style={styles.resultsBox}>
             {isWin ? (
-              <div style={styles.victoryHeader}><span style={styles.victoryEmoji}>🏆</span><h1 style={styles.victoryText}>VICTORY ROYALE!</h1><span style={styles.victoryEmoji}>🏆</span></div>
+              <div style={styles.victoryHeader}><span style={styles.victoryEmoji}>🏆</span><h1 style={styles.victoryText}>VICTORY!</h1><span style={styles.victoryEmoji}>🏆</span></div>
             ) : (
               <div style={styles.defeatHeader}><h1 style={styles.defeatText}>#{result.placement} Place</h1><p style={styles.defeatSub}>Better luck next time!</p></div>
             )}
@@ -1718,8 +2317,8 @@
       logoSection: { textAlign:'center' },
       logoIcon: { fontSize:'4rem', display:'block', marginBottom:'10px', animation:'bounce 2s ease-in-out infinite' },
       logoTitle: { fontSize:'clamp(2.5rem,8vw,4rem)', fontWeight:900, margin:0, letterSpacing:'-2px' },
-      logoBrain: { color:'#c4b5fd' },
-      logoStorm: { color:'#fbbf24', textShadow:'0 0 30px rgba(251,191,36,0.6)' },
+      logoPixel: { color:'#c4b5fd' },
+      logoZone: { color:'#fbbf24', textShadow:'0 0 30px rgba(251,191,36,0.6)' },
       logoRoyale: { fontSize:'clamp(1.5rem,5vw,2.5rem)', fontWeight:800, color:'#fff', letterSpacing:'0.4em', marginTop:'5px', textShadow:'0 0 20px rgba(255,255,255,0.3)' },
       tagline: { color:'#a5b4fc', fontSize:'1.1rem', marginTop:'10px' },
       playerCard: { display:'flex', alignItems:'center', gap:'15px', background:'rgba(255,255,255,0.1)', backdropFilter:'blur(10px)', padding:'15px 25px', borderRadius:'60px', border:'2px solid rgba(255,255,255,0.15)', width:'100%', maxWidth:'450px' },
@@ -1867,7 +2466,7 @@
       backToMenuBtn: { padding:'15px 40px', fontSize:'1rem', fontWeight:600, fontFamily:'inherit', background:'transparent', border:'2px solid rgba(255,255,255,0.3)', borderRadius:'40px', color:'#fff', cursor:'pointer', transition:'all 0.2s' },
     };
 
-    ReactDOM.createRoot(document.getElementById('root')).render(<BrainStormRoyale />);
+    ReactDOM.createRoot(document.getElementById('root')).render(<PixelZone />);
   </script>
 </body>
 </html>
